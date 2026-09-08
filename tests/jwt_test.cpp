@@ -4,6 +4,8 @@
 #include <nlohmann/json.hpp>
 #include "../src/base64url.hpp"
 #include "../src/jwt_utils.hpp"
+#include <functional>
+#include <type_traits>
 #include <fstream>
 #include <sstream>
 #include <cstdio>
@@ -691,4 +693,83 @@ TEST(JtiTest, JtiIsContentDerivedBase32) {
         return;
     }
     FAIL() << "could not encode twice within one second across 3 attempts";
+}
+
+
+// ============================================================================
+// Error taxonomy (U5) — every library failure derives from jwt::Error (and
+// its historical std base, so existing catch sites keep working):
+//   MalformedTokenError  (invalid_argument): not a parseable JWT at all
+//   InvalidClaimsError   (invalid_argument): parses, but wrong/ill-formed claims
+//   SignatureError       (runtime_error):    authentication failed
+// nkeys::Error can also propagate from key material handling (bad seeds).
+// ============================================================================
+
+static_assert(std::is_base_of_v<jwt::Error, jwt::MalformedTokenError>);
+static_assert(std::is_base_of_v<jwt::Error, jwt::InvalidClaimsError>);
+static_assert(std::is_base_of_v<jwt::Error, jwt::SignatureError>);
+static_assert(std::is_base_of_v<std::invalid_argument, jwt::MalformedTokenError>);
+static_assert(std::is_base_of_v<std::invalid_argument, jwt::InvalidClaimsError>);
+static_assert(std::is_base_of_v<std::runtime_error, jwt::SignatureError>);
+
+TEST(ErrorTaxonomyTest, MalformedTokensThrowMalformedTokenError) {
+    EXPECT_THROW((void)jwt::decode("not-a-jwt"), jwt::MalformedTokenError);
+    EXPECT_THROW((void)jwt::decode("a.b"), jwt::MalformedTokenError);
+    EXPECT_THROW((void)jwt::decode("!!!.@@@.###"), jwt::MalformedTokenError);
+}
+
+TEST(ErrorTaxonomyTest, JunkJsonPayloadIsMalformedNotALeakedJsonException) {
+    // valid base64url whose bytes aren't JSON — pre-taxonomy this leaked a
+    // raw nlohmann exception through decode.
+    auto b64 = [](const std::string& s) {
+        std::span<const std::uint8_t> sp(
+            reinterpret_cast<const std::uint8_t*>(s.data()), s.size());
+        return jwt::internal::base64url_encode(sp);
+    };
+    std::string tok = b64(R"({"typ":"JWT","alg":"ed25519-nkey"})") + "." +
+                      b64("this is not json") + "." + b64("sig");
+    EXPECT_THROW((void)jwt::decode(tok), jwt::MalformedTokenError);
+    EXPECT_THROW((void)jwt::decodeUserClaims(tok), jwt::MalformedTokenError);
+}
+
+TEST(ErrorTaxonomyTest, WrongClaimsThrowInvalidClaimsError) {
+    auto okp = nkeys::CreateOperator();
+    jwt::OperatorClaims oc(okp->publicString());
+    auto op_jwt = oc.encode(okp->seedString());
+    // decode an operator token as an account
+    EXPECT_THROW((void)jwt::decodeAccountClaims(op_jwt), jwt::InvalidClaimsError);
+    // encode with the wrong signer type
+    auto ukp = nkeys::CreateUser();
+    jwt::UserClaims uc(ukp->publicString());
+    EXPECT_THROW((void)uc.encode(okp->seedString()), jwt::InvalidClaimsError);
+}
+
+TEST(ErrorTaxonomyTest, TamperedTokensThrowSignatureError) {
+    auto akp = nkeys::CreateAccount();
+    auto ukp = nkeys::CreateUser();
+    jwt::UserClaims claims(ukp->publicString());
+    claims.setName("alice");
+    auto tampered = tamperName(claims.encode(akp->seedString()), "EVIL");
+    EXPECT_THROW((void)jwt::decodeUserClaims(tampered), jwt::SignatureError);
+}
+
+TEST(ErrorTaxonomyTest, EverythingIsCatchableAsJwtError) {
+    const std::vector<std::function<void()>> throwers = {
+        [] { (void)jwt::decode("junk"); },
+        [] { auto okp = nkeys::CreateOperator();
+             jwt::OperatorClaims oc(okp->publicString());
+             (void)jwt::decodeUserClaims(oc.encode(okp->seedString())); },
+    };
+    for (const auto& t : throwers) {
+        try {
+            t();
+            FAIL() << "expected a throw";
+        } catch (const jwt::Error& e) {
+            EXPECT_STRNE(e.what(), "");
+        }
+    }
+    // Key-material failures stay nkeys-typed — callers can tell the layers apart.
+    auto ukp = nkeys::CreateUser();
+    jwt::UserClaims uc(ukp->publicString());
+    EXPECT_THROW((void)uc.encode("not-a-seed"), nkeys::Error);
 }

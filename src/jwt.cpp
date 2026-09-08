@@ -17,15 +17,20 @@ std::unique_ptr<Claims> decode(const std::string& jwt) {
 
     auto payload_bytes = base64url_decode(parts.payload_b64);
     std::string payload_json(payload_bytes.begin(), payload_bytes.end());
-    auto payload = json::parse(payload_json);
+    json payload;
+    try {
+        payload = json::parse(payload_json);
+    } catch (const json::exception& e) {
+        throw MalformedTokenError(std::string("Invalid JWT payload JSON: ") + e.what());
+    }
 
     if (!payload.contains("nats")) {
-        throw std::invalid_argument("Missing 'nats' object in JWT payload");
+        throw InvalidClaimsError("Missing 'nats' object in JWT payload");
     }
     auto nats = payload["nats"];
 
     if (!nats.contains("type")) {
-        throw std::invalid_argument("Missing 'type' field in nats object");
+        throw InvalidClaimsError("Missing 'type' field in nats object");
     }
 
     // Dispatch to type-specific decoder
@@ -36,7 +41,7 @@ std::unique_ptr<Claims> decode(const std::string& jwt) {
     } else if (type == "user") {
         return decodeUserClaims(jwt);
     } else {
-        throw std::invalid_argument("Unknown JWT type: " + type);
+        throw InvalidClaimsError("Unknown JWT type: " + type);
     }
 }
 

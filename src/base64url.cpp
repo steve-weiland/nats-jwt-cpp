@@ -1,5 +1,6 @@
 #include "base64url.hpp"
 #include <stdexcept>
+#include "jwt/jwt_errors.hpp"
 #include <array>
 
 namespace jwt::internal {
@@ -95,7 +96,7 @@ std::vector<std::uint8_t> base64url_decode(std::string_view input) {
         std::uint8_t d = decode_lookup[static_cast<std::uint8_t>(input[i + 3])];
 
         if (a == 0xFF || b == 0xFF || c == 0xFF || d == 0xFF) {
-            throw std::invalid_argument("Invalid Base64 URL character in input");
+            throw MalformedTokenError("Invalid Base64 URL character in input");
         }
 
         std::uint32_t quad = (static_cast<std::uint32_t>(a) << 18) |
@@ -114,14 +115,14 @@ std::vector<std::uint8_t> base64url_decode(std::string_view input) {
     size_t remaining = input.size() - i;
     if (remaining > 0) {
         if (remaining == 1) {
-            throw std::invalid_argument("Invalid Base64 URL input length");
+            throw MalformedTokenError("Invalid Base64 URL input length");
         }
 
         std::uint8_t a = decode_lookup[static_cast<std::uint8_t>(input[i])];
         std::uint8_t b = decode_lookup[static_cast<std::uint8_t>(input[i + 1])];
 
         if (a == 0xFF || b == 0xFF) {
-            throw std::invalid_argument("Invalid Base64 URL character in input");
+            throw MalformedTokenError("Invalid Base64 URL character in input");
         }
 
         std::uint32_t partial = (static_cast<std::uint32_t>(a) << 18) |
@@ -132,7 +133,7 @@ std::vector<std::uint8_t> base64url_decode(std::string_view input) {
         if (remaining == 3) {
             std::uint8_t c = decode_lookup[static_cast<std::uint8_t>(input[i + 2])];
             if (c == 0xFF) {
-                throw std::invalid_argument("Invalid Base64 URL character in input");
+                throw MalformedTokenError("Invalid Base64 URL character in input");
             }
             partial |= static_cast<std::uint32_t>(c) << 6;
             result.push_back(static_cast<std::uint8_t>((partial >> 8) & 0xFF));

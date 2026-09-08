@@ -1,5 +1,6 @@
 #include "jwt/operator_claims.hpp"
 #include "jwt/jwt_constants.hpp"
+#include "jwt/jwt_errors.hpp"
 #include "base64url.hpp"
 #include "jwt_utils.hpp"
 #include <nkeys/nkeys.hpp>
@@ -51,7 +52,7 @@ std::string OperatorClaims::encode(const std::string& seed) const {
     auto keypair = nkeys::FromSeed(seed);
     impl_->issuer_ = keypair->publicString();
     if (!nkeys::IsValidPublicOperatorKey(impl_->issuer_)) {
-        throw std::invalid_argument("Operator JWTs must be signed by an operator key");
+        throw InvalidClaimsError("Operator JWTs must be signed by an operator key");
     }
     impl_->issuedAt_ = getCurrentTimestamp();
 
@@ -118,13 +119,13 @@ std::string OperatorClaims::encode(const std::string& seed) const {
 
 void OperatorClaims::validate() const {
     if (impl_->subject_.empty()) {
-        throw std::invalid_argument("Operator subject cannot be empty");
+        throw InvalidClaimsError("Operator subject cannot be empty");
     }
     if (impl_->issuer_.empty()) {
-        throw std::invalid_argument("Operator issuer cannot be empty");
+        throw InvalidClaimsError("Operator issuer cannot be empty");
     }
     if (impl_->subject_[0] != 'O') {
-        throw std::invalid_argument("Operator subject must start with 'O'");
+        throw InvalidClaimsError("Operator subject must start with 'O'");
     }
 }
 
@@ -138,10 +139,15 @@ std::unique_ptr<OperatorClaims> decodeOperatorClaims(const std::string& jwt) {
     // Decode and validate header
     auto header_bytes = base64url_decode(parts.header_b64);
     std::string header_json(header_bytes.begin(), header_bytes.end());
-    auto header = json::parse(header_json);
+    json header;
+    try {
+        header = json::parse(header_json);
+    } catch (const json::exception& e) {
+        throw MalformedTokenError(std::string("Invalid JWT header JSON: ") + e.what());
+    }
 
     if (!header.contains("alg") || header["alg"] != JWT_ALGORITHM) {
-        throw std::invalid_argument(
+        throw InvalidClaimsError(
             "Unsupported algorithm: expected '" + std::string(JWT_ALGORITHM) + "'"
         );
     }
@@ -149,23 +155,28 @@ std::unique_ptr<OperatorClaims> decodeOperatorClaims(const std::string& jwt) {
     // Decode and parse payload
     auto payload_bytes = base64url_decode(parts.payload_b64);
     std::string payload_json(payload_bytes.begin(), payload_bytes.end());
-    auto payload = json::parse(payload_json);
+    json payload;
+    try {
+        payload = json::parse(payload_json);
+    } catch (const json::exception& e) {
+        throw MalformedTokenError(std::string("Invalid JWT payload JSON: ") + e.what());
+    }
 
     // Validate NATS-specific claims
     if (!payload.contains("nats")) {
-        throw std::invalid_argument("Missing 'nats' object in JWT payload");
+        throw InvalidClaimsError("Missing 'nats' object in JWT payload");
     }
     auto nats = payload["nats"];
 
     if (!nats.contains("type") || nats["type"] != "operator") {
-        throw std::invalid_argument(
+        throw InvalidClaimsError(
             "JWT type mismatch: expected 'operator', got '" +
             (nats.contains("type") ? nats["type"].get<std::string>() : "missing") + "'"
         );
     }
 
     if (!nats.contains("version") || nats["version"] != JWT_VERSION) {
-        throw std::invalid_argument(
+        throw InvalidClaimsError(
             "Unsupported JWT version: expected " + std::to_string(JWT_VERSION)
         );
     }
@@ -178,7 +189,7 @@ std::unique_ptr<OperatorClaims> decodeOperatorClaims(const std::string& jwt) {
     // must verify against the embedded issuer, or the claims never reach the
     // caller (an unauthenticated decode hands out attacker-edited claims).
     if (!verifySignature(issuer, parts.signing_input, parts.signature_b64)) {
-        throw std::invalid_argument("JWT signature verification failed");
+        throw SignatureError("JWT signature verification failed");
     }
     std::int64_t iat = payload.at("iat").get<std::int64_t>();
 

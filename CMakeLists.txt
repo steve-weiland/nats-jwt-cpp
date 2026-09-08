@@ -265,6 +265,7 @@ install(TARGETS jwt
 install(FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/jwt.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/jwt_constants.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/jwt_errors.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/claims.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/operator_claims.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/account_claims.hpp

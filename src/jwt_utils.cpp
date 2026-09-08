@@ -1,4 +1,5 @@
 #include "jwt_utils.hpp"
+#include "jwt/jwt_errors.hpp"
 #include "jwt/jwt_constants.hpp"
 #include "base64url.hpp"
 #include <nkeys/nkeys.hpp>
@@ -140,7 +141,7 @@ std::string createHeader() {
 JwtParts parseJwt(std::string_view jwt) {
     // Cap before doing ANY work (Go: MaxTokenSize, checked first in Decode)
     if (jwt.size() > MAX_JWT_SIZE) {
-        throw std::invalid_argument(
+        throw MalformedTokenError(
             "Token size " + std::to_string(jwt.size()) +
             " exceeds maximum of " + std::to_string(MAX_JWT_SIZE) + " bytes");
     }
@@ -148,17 +149,17 @@ JwtParts parseJwt(std::string_view jwt) {
     // Find the two dots separating header.payload.signature
     size_t first_dot = jwt.find('.');
     if (first_dot == std::string_view::npos) {
-        throw std::invalid_argument("Invalid JWT format: missing first '.'");
+        throw MalformedTokenError("Invalid JWT format: missing first '.'");
     }
 
     size_t second_dot = jwt.find('.', first_dot + 1);
     if (second_dot == std::string_view::npos) {
-        throw std::invalid_argument("Invalid JWT format: missing second '.'");
+        throw MalformedTokenError("Invalid JWT format: missing second '.'");
     }
 
     // Check for extra parts (more than 2 dots)
     if (jwt.find('.', second_dot + 1) != std::string_view::npos) {
-        throw std::invalid_argument("Invalid JWT format: too many parts");
+        throw MalformedTokenError("Invalid JWT format: too many parts");
     }
 
     // Extract the three parts
@@ -168,13 +169,13 @@ JwtParts parseJwt(std::string_view jwt) {
 
     // Validate all parts are non-empty
     if (header_b64.empty()) {
-        throw std::invalid_argument("Invalid JWT format: empty header");
+        throw MalformedTokenError("Invalid JWT format: empty header");
     }
     if (payload_b64.empty()) {
-        throw std::invalid_argument("Invalid JWT format: empty payload");
+        throw MalformedTokenError("Invalid JWT format: empty payload");
     }
     if (signature_b64.empty()) {
-        throw std::invalid_argument("Invalid JWT format: empty signature");
+        throw MalformedTokenError("Invalid JWT format: empty signature");
     }
 
     // Create signing input (what was actually signed)
