@@ -38,6 +38,13 @@ the Go implementation is the defining requirement and is continuously measured
   MalformedTokenError / InvalidClaimsError / SignatureError, each also
   deriving its historical std base. nkeys::Error propagates for key material.
   Translate nlohmann exceptions at parse sites — they must not leak.
+- **Claims must be server-usable and re-sign-safe.** Fresh account/user
+  claims emit Go's default no-limit fields — nats-server treats ABSENT limits
+  as ZERO (measured: "maximum account active connections exceeded" from a
+  real server). Decoded claims carry their full `nats` object through
+  re-encode so un-ported fields (real limits, mappings, imports…) survive the
+  re-sign flow — resetting them to defaults would be silent privilege
+  escalation.
 - **Docs state measured truth only** (history: "License TBD", a README example
   demonstrating a redundant setIssuer dance, tests that asserted the
   creds-breaking bug).
@@ -68,6 +75,11 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
    rm -rf build* cmake-build-* && cmake -S . -B b >/dev/null && \
    cmake --build b -j >/dev/null && ctest --test-dir b'
 ```
+
+- the real-server gate for anything touching claim content or creds:
+  `tests/e2e-server/run.sh <build-dir>` (docker) — a fully C++-minted chain
+  (bootstrap mode: the Go README flow verbatim + resolver.conf) must
+  authenticate against nats:2.10-alpine, with a no-creds negative control.
 
 - the live Go interop matrix for anything wire-relevant:
   `tests/interop/run.sh <build-dir>` — C++-minted tokens through Go's

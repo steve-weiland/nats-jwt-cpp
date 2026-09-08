@@ -11,6 +11,22 @@ namespace jwt {
 
 class AccountClaims::Impl {
 public:
+    // The full nats object as decoded, or Go's NewAccountClaims defaults for
+    // fresh claims. The defaults matter operationally: nats-server treats
+    // ABSENT limits as ZERO — an account without them can never connect
+    // (measured against a real server: "maximum account active connections
+    // exceeded"). Go emits no-limit (-1) fields; so do we. Carrying the
+    // decoded object through re-encode keeps un-ported fields (real limits,
+    // mappings, imports…) intact — resetting them to defaults would be
+    // silent privilege escalation on the re-sign flow.
+    nlohmann::json natsRaw_ = {
+        {"limits", {{"subs", -1}, {"data", -1}, {"payload", -1},
+                    {"imports", -1}, {"exports", -1}, {"wildcards", true},
+                    {"conn", -1}, {"leaf", -1}}},
+        {"default_permissions", {{"pub", nlohmann::json::object()},
+                                 {"sub", nlohmann::json::object()}}},
+        {"authorization", nlohmann::json::object()},
+    };
     std::string subject_;
     std::string issuer_;
     std::optional<std::string> name_;
@@ -76,14 +92,16 @@ std::string AccountClaims::encode(const std::string& seed) const {
         payload["exp"] = impl_->expires_;
     }
 
-    // NATS-specific claims
-    json nats_claims = {
-        {"type", "account"},
-        {"version", JWT_VERSION}
-    };
+    // NATS-specific claims: start from the carried nats object, then
+    // overwrite the fields this port manages.
+    json nats_claims = impl_->natsRaw_;
     if (!impl_->signingKeys_.empty()) {
         nats_claims["signing_keys"] = impl_->signingKeys_;
+    } else {
+        nats_claims.erase("signing_keys");
     }
+    nats_claims["type"] = "account";
+    nats_claims["version"] = JWT_VERSION;
     payload["nats"] = nats_claims;
 
     payload["jti"] = computeJti(payload.dump());
@@ -201,6 +219,7 @@ std::unique_ptr<AccountClaims> decodeAccountClaims(const std::string& jwt) {
 
     // Create AccountClaims object
     auto claims = std::make_unique<AccountClaims>(subject);
+    claims->impl_->natsRaw_ = nats;
 
     // Populate required fields (direct access via friend declaration)
     claims->impl_->issuer_ = issuer;

@@ -11,6 +11,11 @@ namespace jwt {
 
 class OperatorClaims::Impl {
 public:
+    // The full nats object as decoded (or Go's defaults for fresh claims):
+    // encode re-serializes it so un-ported fields survive decode→re-encode —
+    // dropping them (or resetting to defaults) would silently change what a
+    // re-signed JWT grants.
+    nlohmann::json natsRaw_ = nlohmann::json::object();
     std::string subject_;
     std::string issuer_;
     std::optional<std::string> name_;
@@ -75,14 +80,16 @@ std::string OperatorClaims::encode(const std::string& seed) const {
         payload["exp"] = impl_->expires_;
     }
 
-    // NATS-specific claims
-    json nats_claims = {
-        {"type", "operator"},
-        {"version", JWT_VERSION}
-    };
+    // NATS-specific claims: start from the carried nats object, then
+    // overwrite the fields this port manages.
+    json nats_claims = impl_->natsRaw_;
     if (!impl_->signingKeys_.empty()) {
         nats_claims["signing_keys"] = impl_->signingKeys_;
+    } else {
+        nats_claims.erase("signing_keys");
     }
+    nats_claims["type"] = "operator";
+    nats_claims["version"] = JWT_VERSION;
     payload["nats"] = nats_claims;
 
     payload["jti"] = computeJti(payload.dump());
@@ -195,6 +202,7 @@ std::unique_ptr<OperatorClaims> decodeOperatorClaims(const std::string& jwt) {
 
     // Create OperatorClaims object
     auto claims = std::make_unique<OperatorClaims>(subject);
+    claims->impl_->natsRaw_ = nats;
 
     // Populate required fields (direct access via friend declaration)
     claims->impl_->issuer_ = issuer;

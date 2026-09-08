@@ -12,6 +12,15 @@ namespace jwt {
 
 class UserClaims::Impl {
 public:
+    // The full nats object as decoded, or Go's NewUserClaims defaults for
+    // fresh claims (no-limit subs/data/payload, empty pub/sub permissions) —
+    // nats-server treats absent limits as zero, making the user unusable.
+    // Carried through re-encode so un-ported fields survive.
+    nlohmann::json natsRaw_ = {
+        {"pub", nlohmann::json::object()},
+        {"sub", nlohmann::json::object()},
+        {"subs", -1}, {"data", -1}, {"payload", -1},
+    };
     std::string subject_;
     std::string issuer_;
     std::optional<std::string> name_;
@@ -76,14 +85,16 @@ std::string UserClaims::encode(const std::string& seed) const {
         payload["exp"] = impl_->expires_;
     }
 
-    // NATS-specific claims
-    json nats_claims = {
-        {"type", "user"},
-        {"version", JWT_VERSION}
-    };
+    // NATS-specific claims: start from the carried nats object, then
+    // overwrite the fields this port manages.
+    json nats_claims = impl_->natsRaw_;
     if (impl_->issuerAccount_) {
         nats_claims["issuer_account"] = *impl_->issuerAccount_;
+    } else {
+        nats_claims.erase("issuer_account");
     }
+    nats_claims["type"] = "user";
+    nats_claims["version"] = JWT_VERSION;
     payload["nats"] = nats_claims;
 
     payload["jti"] = computeJti(payload.dump());
@@ -199,6 +210,7 @@ std::unique_ptr<UserClaims> decodeUserClaims(const std::string& jwt) {
 
     // Create UserClaims object
     auto claims = std::make_unique<UserClaims>(subject);
+    claims->impl_->natsRaw_ = nats;
 
     // Populate required fields (direct access via friend declaration)
     claims->impl_->issuer_ = issuer;

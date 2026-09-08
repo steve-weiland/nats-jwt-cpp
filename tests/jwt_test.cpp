@@ -773,3 +773,86 @@ TEST(ErrorTaxonomyTest, EverythingIsCatchableAsJwtError) {
     jwt::UserClaims uc(ukp->publicString());
     EXPECT_THROW((void)uc.encode("not-a-seed"), nkeys::Error);
 }
+
+
+// ============================================================================
+// Server-usable claims — found by the real-nats-server gate: Go's
+// NewAccountClaims/NewUserClaims emit default NO-limit fields (-1); ours
+// omitted them and nats-server treats ABSENT limits as ZERO — accounts that
+// can never connect ("maximum account active connections exceeded").
+// And the flip side: re-encoding decoded claims must PRESERVE the nats
+// object's un-ported fields — otherwise the README's re-sign flow would
+// silently replace an account's REAL limits with unlimited defaults.
+// ============================================================================
+
+namespace {
+    nlohmann::json natsOf(const std::string& token) {
+        auto first = token.find('.');
+        auto second = token.find('.', first + 1);
+        auto bytes = jwt::internal::base64url_decode(
+            token.substr(first + 1, second - first - 1));
+        return nlohmann::json::parse(std::string(bytes.begin(), bytes.end())).at("nats");
+    }
+}
+
+TEST(ServerUsableClaimsTest, FreshAccountCarriesGoDefaultLimits) {
+    auto okp = nkeys::CreateOperator();
+    auto akp = nkeys::CreateAccount();
+    jwt::AccountClaims ac(akp->publicString());
+    auto nats = natsOf(ac.encode(okp->seedString()));
+
+    const nlohmann::json goDefaults = {
+        {"subs", -1}, {"data", -1}, {"payload", -1}, {"imports", -1},
+        {"exports", -1}, {"wildcards", true}, {"conn", -1}, {"leaf", -1}};
+    EXPECT_EQ(nats.at("limits"), goDefaults);
+    EXPECT_EQ(nats.at("default_permissions"),
+              nlohmann::json({{"pub", nlohmann::json::object()},
+                              {"sub", nlohmann::json::object()}}));
+}
+
+TEST(ServerUsableClaimsTest, FreshUserCarriesGoDefaultLimits) {
+    auto akp = nkeys::CreateAccount();
+    auto ukp = nkeys::CreateUser();
+    jwt::UserClaims uc(ukp->publicString());
+    auto nats = natsOf(uc.encode(akp->seedString()));
+
+    EXPECT_EQ(nats.at("subs"), -1);
+    EXPECT_EQ(nats.at("data"), -1);
+    EXPECT_EQ(nats.at("payload"), -1);
+    EXPECT_EQ(nats.at("pub"), nlohmann::json::object());
+    EXPECT_EQ(nats.at("sub"), nlohmann::json::object());
+}
+
+TEST(ServerUsableClaimsTest, ReEncodePreservesUnportedNatsFields) {
+    // An account with CUSTOM limits (conn capped at 5) and an un-ported field
+    // (mappings), hand-signed so it decodes. Re-signing it (the README's
+    // operator re-sign flow) must keep both — replacing them with unlimited
+    // defaults would be silent privilege escalation.
+    auto akp = nkeys::CreateAccount();
+    auto okp = nkeys::CreateOperator();
+    std::string header = R"({"typ":"JWT","alg":"ed25519-nkey"})";
+    std::string payload = R"({"iat":1700000000,"iss":")" + akp->publicString() +
+        R"(","jti":"x","sub":")" + akp->publicString() +
+        R"(","nats":{"limits":{"subs":-1,"data":-1,"payload":-1,"imports":-1,)"
+        R"("exports":-1,"wildcards":true,"conn":5,"leaf":-1},)"
+        R"("mappings":{"orders.*":[{"dest":"orders.v2.*","weight":100}]},)"
+        R"("type":"account","version":2}})";
+    auto b64 = [](const std::string& s) {
+        std::span<const std::uint8_t> sp(
+            reinterpret_cast<const std::uint8_t*>(s.data()), s.size());
+        return jwt::internal::base64url_encode(sp);
+    };
+    std::string signing_input = b64(header) + "." + b64(payload);
+    auto kp = nkeys::FromSeed(akp->seedString());
+    std::span<const std::uint8_t> si(
+        reinterpret_cast<const std::uint8_t*>(signing_input.data()), signing_input.size());
+    std::string token = signing_input + "." +
+                        jwt::internal::base64url_encode(kp->sign(si));
+
+    auto claims = jwt::decodeAccountClaims(token);
+    auto nats = natsOf(claims->encode(okp->seedString()));
+    EXPECT_EQ(nats.at("limits").at("conn"), 5) << "custom limit lost on re-encode";
+    EXPECT_EQ(nats.at("mappings").at("orders.*")[0].at("dest"), "orders.v2.*")
+        << "un-ported field lost on re-encode";
+    EXPECT_EQ(nats.at("type"), "account");
+}

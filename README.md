@@ -135,6 +135,19 @@ All consumption paths (find_package static + shared, pkg-config,
 add_subdirectory embed) are exercised by `tests/packaging/test.sh` in CI —
 the installed library is `libnatsjwt`, not a collision-prone `libjwt`.
 
+## End-to-End: a Real nats-server
+
+The Go README ends by wiring its JWTs into a running server; here that is a
+standing CI gate. `cpp_driver bootstrap` mints the full flow — operator with
+a signing key; account self-signed, then re-signed by the operator signing
+key; user issued by an account signing key with `issuer_account`; `u.creds`;
+and a memory-resolver `resolver.conf` — and `tests/e2e-server/run.sh` boots a
+real `nats-server` with it, runs an authenticated request/reply round trip,
+and confirms a creds-less connection is refused. Fresh claims carry Go's
+default no-limit fields (a server treats absent limits as zero), and decoded
+claims carry their full `nats` object through re-encode, so re-signing never
+drops or resets fields this port doesn't model.
+
 ## Requirements
 
 - **Compiler**: C++20 (GCC 10+, Clang 12+, MSVC 19.29+)

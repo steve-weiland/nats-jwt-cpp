@@ -4,6 +4,12 @@
 //   verify <file>             signature check via the embedded issuer
 //   chain <op> <acc> <user>   strict() chain validation
 //   encode <dir>              writes op/acc/user.jwt + u.creds (direct issuance)
+//   bootstrap <dir>           the Go README flow, verbatim: operator with a
+//                             signing key; account self-signed, then decoded
+//                             and re-signed BY the operator signing key; user
+//                             issued by an account signing key with
+//                             issuer_account; u.creds; and resolver.conf for
+//                             a memory-resolver nats-server
 #include <jwt/jwt.hpp>
 #include <nkeys/nkeys.hpp>
 #include <fstream>
@@ -31,6 +37,48 @@ int main([[maybe_unused]] int argc, char** argv) try {
         std::vector<std::string> chain = {slurp(argv[2]), slurp(argv[3]), slurp(argv[4])};
         auto r = jwt::validateChain(chain, jwt::ValidationOptions::strict());
         std::cout << (r.valid ? "CPP-CHAIN-OK" : "CPP-CHAIN-FAIL: " + r.error.value_or("")) << "\n";
+    } else if (mode == "bootstrap") {
+        std::string dir = argv[2];
+
+        // operator, plus a signing key that will issue accounts
+        auto okp = nkeys::CreateOperator();
+        auto oskp = nkeys::CreateOperator();
+        jwt::OperatorClaims oc(okp->publicString());
+        oc.setName("O");
+        oc.addSigningKey(oskp->publicString());
+        std::string opJwt = oc.encode(okp->seedString());
+
+        // account: self-sign first (the README flow), hand to the operator,
+        // who decodes and re-signs with the SIGNING key
+        auto akp = nkeys::CreateAccount();
+        auto askp = nkeys::CreateAccount();
+        jwt::AccountClaims ac(akp->publicString());
+        ac.setName("A");
+        ac.addSigningKey(askp->publicString());
+        std::string selfSigned = ac.encode(akp->seedString());
+        auto received = jwt::decodeAccountClaims(selfSigned);
+        std::string accJwt = received->encode(oskp->seedString());
+
+        // user: issued by the account SIGNING key; issuer_account names the
+        // account so the server knows where to look
+        auto ukp = nkeys::CreateUser();
+        jwt::UserClaims uc(ukp->publicString());
+        uc.setIssuerAccount(akp->publicString());
+        std::string userJwt = uc.encode(askp->seedString());
+        std::string creds = jwt::formatUserConfig(userJwt, ukp->seedString());
+
+        // memory-resolver config, the Go README's resolver.conf
+        std::string resolver = "operator: " + opJwt + "\n\n" +
+                               "resolver: MEMORY\n" +
+                               "resolver_preload: {\n" +
+                               "\t" + akp->publicString() + ": " + accJwt + "\n" +
+                               "}\n";
+
+        for (auto& [n, c] : std::vector<std::pair<std::string, std::string>>{
+                 {"op.jwt", opJwt}, {"acc.jwt", accJwt}, {"user.jwt", userJwt},
+                 {"u.creds", creds}, {"resolver.conf", resolver}})
+            std::ofstream(dir + "/" + n) << c;
+        std::cout << "OK\n";
     } else if (mode == "encode") { // dir → write op/acc/user jwts + creds, README-style (direct issuance)
         std::string dir = argv[2];
         auto okp = nkeys::CreateOperator();
