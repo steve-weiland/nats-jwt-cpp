@@ -2,7 +2,7 @@
 
 ## Overview
 
-jwt-cpp is a JWT authentication library that handles sensitive cryptographic operations and identity assertions. This document outlines security considerations, best practices, and the library's security design.
+nats-jwt-cpp is a JWT authentication library that handles sensitive cryptographic operations and identity assertions. This document outlines security considerations, best practices, and the library's security design.
 
 ## Reporting Security Vulnerabilities
 
@@ -280,7 +280,7 @@ Always consult security/compliance experts for regulated environments.
 
 ## Security Checklist for Integrators
 
-Before deploying jwt-cpp in production:
+Before deploying nats-jwt-cpp in production:
 
 - [ ] Seeds stored securely (use nkeys-cpp best practices)
 - [ ] Build includes hardening flags (`JWT_ENABLE_HARDENING=ON`)

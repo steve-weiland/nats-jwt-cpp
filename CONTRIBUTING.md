@@ -1,6 +1,6 @@
-# Contributing to jwt-cpp
+# Contributing to nats-jwt-cpp
 
-Thank you for your interest in contributing to jwt-cpp! This document provides guidelines and best practices for contributing to the project.
+Thank you for your interest in contributing to nats-jwt-cpp! This document provides guidelines and best practices for contributing to the project.
 
 ## Getting Started
 
@@ -15,8 +15,8 @@ Thank you for your interest in contributing to jwt-cpp! This document provides g
 
 ```bash
 # Clone the repository
-git clone https://github.com/steve-weiland/jwt-cpp.git
-cd jwt-cpp
+git clone https://github.com/steve-weiland/nats-jwt-cpp.git
+cd nats-jwt-cpp
 
 # Build with debug symbols and sanitizers
 cmake -S . -B build \
@@ -35,11 +35,11 @@ nkeys-cpp will be automatically fetched and built during configuration.
 
 ## Building for Development
 
-jwt-cpp automatically handles dependencies via FetchContent. Just clone and build:
+nats-jwt-cpp automatically handles dependencies via FetchContent. Just clone and build:
 
 ```bash
-git clone https://github.com/steve-weiland/jwt-cpp.git
-cd jwt-cpp
+git clone https://github.com/steve-weiland/nats-jwt-cpp.git
+cd nats-jwt-cpp
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DJWT_WARNINGS_AS_ERRORS=ON
 cmake --build build
 ctest --test-dir build
@@ -422,4 +422,4 @@ Contributors are recognized in:
 - **JWT RFC**: https://datatracker.ietf.org/doc/html/rfc7519
 - **Base64 URL Encoding**: https://datatracker.ietf.org/doc/html/rfc4648#section-5
 
-Thank you for contributing to jwt-cpp! Your efforts help make secure NATS authentication accessible to everyone.
+Thank you for contributing to nats-jwt-cpp! Your efforts help make secure NATS authentication accessible to everyone.

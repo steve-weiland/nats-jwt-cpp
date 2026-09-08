@@ -1,4 +1,4 @@
-jwt-cpp
+nats-jwt-cpp
 Copyright 2025-2026 Steve Weiland
 
 This product is a C++ port of the NATS JWT library

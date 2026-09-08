@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)  # PROJECT_IS_TOP_LEVEL
 
 # Project
-project(jwt-cpp LANGUAGES CXX)
+project(nats-jwt-cpp LANGUAGES CXX)
 
 # --- Options ---------------------------------------------------------------
 option(JWT_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)

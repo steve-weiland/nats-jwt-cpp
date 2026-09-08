@@ -1,6 +1,6 @@
-# jwt-cpp
+# nats-jwt-cpp
 
-[![CI](https://github.com/steve-weiland/jwt-cpp/actions/workflows/ci.yml/badge.svg)](https://github.com/steve-weiland/jwt-cpp/actions/workflows/ci.yml)
+[![CI](https://github.com/steve-weiland/nats-jwt-cpp/actions/workflows/ci.yml/badge.svg)](https://github.com/steve-weiland/nats-jwt-cpp/actions/workflows/ci.yml)
 
 A C++20 port of the [NATS JWT](https://github.com/nats-io/jwt) Go library for
 Ed25519-based authentication tokens. Wire-compatible with the Go

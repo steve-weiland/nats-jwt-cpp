@@ -5,7 +5,7 @@ code in this repository.
 
 ## Project Overview
 
-jwt-cpp is a C++20 port of the Go [NATS JWT](https://github.com/nats-io/jwt)
+nats-jwt-cpp is a C++20 port of the Go [NATS JWT](https://github.com/nats-io/jwt)
 library (v2): operator/account/user claims, Ed25519-signed JWTs via
 [nkeys-cpp](https://github.com/steve-weiland/nkeys-cpp), timing/chain
 validation, and `.creds` generation. It is a deliberate PARTIAL port — see the
@@ -110,7 +110,7 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
 Scope cuts are documented in the README (permissions/limits, imports/exports,
 activations, scoped signing keys, aud/tags, v1 reading, creds parsing).
 Usability items open: CMake package config + pkg-config + packaging gate
-(blocked on the naming decision — `jwt-cpp`/`find_package(jwt)` collides with
+(blocked on the naming decision — `nats-jwt-cpp`/`find_package(jwt)` collides with
 thalhammer/jwt-cpp), `BUILD_SHARED_LIBS`. nkeys-cpp's symbol-collision
 handling does NOT apply here (nothing vendored except the SHA-512/256 core,
 which is internal).
