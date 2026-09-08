@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <fstream>
 #include "jwt/jwt.hpp"
 #include "jwt/validation.hpp"
 #include <nkeys/nkeys.hpp>
@@ -449,4 +450,108 @@ TEST(ValidationTest, ValidationResultBoolConversion) {
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
+}
+
+
+// ============================================================================
+// Trust model (fixes #3 + #4) — measured against the live Go library:
+// the fixtures ARE Go's canonical flow (operator with signing key; account
+// self-signed then re-signed BY the signing key; user signed by the account
+// signing key with issuer_account). Pre-fix, C++ rejected the self-signed
+// account at decode and failed the whole chain at validateChain.
+// ============================================================================
+
+namespace {
+    std::string readFixtureJwt(const std::string& name) {
+        std::ifstream f("tests/fixtures/" + name, std::ios::binary);
+        if (!f) f.open("../tests/fixtures/" + name, std::ios::binary);
+        EXPECT_TRUE(f.is_open()) << "fixture " << name;
+        std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+        return s;
+    }
+}
+
+TEST(TrustModelTest, DecodesGoSelfSignedAccount) {
+    // Go's ExpectedPrefixes for accounts is {operator, account}: the
+    // documented flow self-signs, hands to the operator, who re-signs.
+    auto claims = jwt::decodeAccountClaims(readFixtureJwt("account-selfsigned.jwt"));
+    EXPECT_EQ(claims->issuer(), claims->subject());
+}
+
+TEST(TrustModelTest, SelfSignedAccountEncodesAndDecodes) {
+    auto akp = nkeys::CreateAccount();
+    jwt::AccountClaims ac(akp->publicString());
+    ac.setIssuer(akp->publicString());
+    auto token = ac.encode(akp->seedString());
+    EXPECT_EQ(jwt::decodeAccountClaims(token)->issuer(), akp->publicString());
+}
+
+TEST(TrustModelTest, AccountIssuerMustBeOperatorOrAccount) {
+    auto akp = nkeys::CreateAccount();
+    auto ukp = nkeys::CreateUser();
+    jwt::AccountClaims ac(akp->publicString());
+    ac.setIssuer(ukp->publicString());  // user key can't issue accounts
+    EXPECT_THROW(ac.validate(), std::invalid_argument);
+}
+
+TEST(TrustModelTest, GoCanonicalChainValidatesStrict) {
+    // THE gate for #4: Go's README flow through strict chain validation.
+    std::vector<std::string> chain = {
+        readFixtureJwt("operator.jwt"),
+        readFixtureJwt("account.jwt"),
+        readFixtureJwt("user.jwt"),
+    };
+    auto result = jwt::validateChain(chain, jwt::ValidationOptions::strict());
+    EXPECT_TRUE(result.valid) << result.error.value_or("");
+}
+
+TEST(TrustModelTest, IssuerChainAcceptsParentSigningKey) {
+    auto okp = nkeys::CreateOperator();
+    auto oskp = nkeys::CreateOperator();  // operator signing key
+    jwt::OperatorClaims oc(okp->publicString());
+    oc.addSigningKey(oskp->publicString());
+    auto op_jwt = oc.encode(okp->seedString());
+
+    auto akp = nkeys::CreateAccount();
+    jwt::AccountClaims ac(akp->publicString());
+    ac.setIssuer(oskp->publicString());   // issued by the SIGNING key
+    auto acc_jwt = ac.encode(oskp->seedString());
+
+    auto op = jwt::decodeOperatorClaims(op_jwt);
+    auto acc = jwt::decodeAccountClaims(acc_jwt);
+    EXPECT_TRUE(jwt::validateIssuerChain(*acc, *op).valid);
+
+    // an unrelated operator key is NOT a valid issuer
+    auto stranger = nkeys::CreateOperator();
+    jwt::AccountClaims bad(akp->publicString());
+    bad.setIssuer(stranger->publicString());
+    auto bad_jwt = bad.encode(stranger->seedString());
+    auto badc = jwt::decodeAccountClaims(bad_jwt);
+    EXPECT_FALSE(jwt::validateIssuerChain(*badc, *op).valid);
+}
+
+TEST(TrustModelTest, UserIssuerAccountMustMatchAccountSubject) {
+    auto akp = nkeys::CreateAccount();
+    auto askp = nkeys::CreateAccount();  // account signing key
+    auto other = nkeys::CreateAccount();
+    auto ukp = nkeys::CreateUser();
+
+    jwt::AccountClaims ac(akp->publicString());
+    ac.setIssuer(akp->publicString());
+    ac.addSigningKey(askp->publicString());
+    auto acc = jwt::decodeAccountClaims(ac.encode(akp->seedString()));
+
+    jwt::UserClaims uc(ukp->publicString());
+    uc.setIssuer(askp->publicString());
+    uc.setIssuerAccount(other->publicString());  // names the WRONG account
+    auto user = jwt::decodeUserClaims(uc.encode(askp->seedString()));
+
+    EXPECT_FALSE(jwt::validateIssuerChain(*user, *acc).valid);
+
+    jwt::UserClaims good(ukp->publicString());
+    good.setIssuer(askp->publicString());
+    good.setIssuerAccount(akp->publicString());
+    auto goodUser = jwt::decodeUserClaims(good.encode(askp->seedString()));
+    EXPECT_TRUE(jwt::validateIssuerChain(*goodUser, *acc).valid);
 }

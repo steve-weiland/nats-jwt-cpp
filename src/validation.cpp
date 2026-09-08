@@ -102,11 +102,45 @@ ValidationResult validateIssuerChain(const Claims& child, const Claims& parent) 
         return ValidationResult::failure("Parent subject is empty");
     }
 
-    if (childIssuer != parentSubject) {
+    // The parent vouches for its identity key AND its signing keys — Go's
+    // canonical flow issues children by signing key (the operator's account
+    // JWTs, the account's user JWTs), so subject-only matching rejected the
+    // very setup the Go README demonstrates.
+    bool issuerVouchedFor = (childIssuer == parentSubject);
+    if (!issuerVouchedFor) {
+        const std::vector<std::string>* signingKeys = nullptr;
+        if (const auto* op = dynamic_cast<const OperatorClaims*>(&parent)) {
+            signingKeys = &op->signingKeys();
+        } else if (const auto* acc = dynamic_cast<const AccountClaims*>(&parent)) {
+            signingKeys = &acc->signingKeys();
+        }
+        if (signingKeys) {
+            for (const auto& key : *signingKeys) {
+                if (childIssuer == key) {
+                    issuerVouchedFor = true;
+                    break;
+                }
+            }
+        }
+    }
+    if (!issuerVouchedFor) {
         std::ostringstream oss;
         oss << "Issuer chain broken: child issuer '" << childIssuer
-            << "' does not match parent subject '" << parentSubject << "'";
+            << "' is neither parent subject '" << parentSubject
+            << "' nor one of its signing keys";
         return ValidationResult::failure(oss.str());
+    }
+
+    // A user issued by a signing key names its account via issuer_account —
+    // when present it must be THIS account, or the user belongs elsewhere.
+    if (const auto* user = dynamic_cast<const UserClaims*>(&child)) {
+        if (auto issuerAccount = user->issuerAccount();
+            issuerAccount && *issuerAccount != parentSubject) {
+            std::ostringstream oss;
+            oss << "issuer_account '" << *issuerAccount
+                << "' does not match the account subject '" << parentSubject << "'";
+            return ValidationResult::failure(oss.str());
+        }
     }
 
     return ValidationResult::success();

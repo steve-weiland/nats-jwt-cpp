@@ -115,8 +115,10 @@ void AccountClaims::validate() const {
     if (impl_->subject_[0] != 'A') {
         throw std::invalid_argument("Account subject must start with 'A'");
     }
-    if (impl_->issuer_[0] != 'O') {
-        throw std::invalid_argument("Account issuer must be an Operator (start with 'O')");
+    // Go's ExpectedPrefixes for accounts: {operator, account} — self-signed
+    // accounts are the documented flow (self-sign, hand to operator, re-sign).
+    if (impl_->issuer_[0] != 'O' && impl_->issuer_[0] != 'A') {
+        throw std::invalid_argument("Account issuer must be an Operator or Account (start with 'O' or 'A')");
     }
     if (impl_->expires_ > 0 && impl_->issuedAt_ > 0 &&
         impl_->expires_ <= impl_->issuedAt_) {
