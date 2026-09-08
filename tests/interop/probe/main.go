@@ -1,0 +1,91 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/nats-io/jwt/v2"
+	"github.com/nats-io/nkeys"
+)
+
+func must(err error) {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ERR:", err)
+		os.Exit(1)
+	}
+}
+
+func main() {
+	switch os.Args[1] {
+	case "gen": // dir → writes README-flow artifacts: op(+signing key), self-signed→re-signed account, user via signing key, creds
+		dir := os.Args[2]
+		okp, _ := nkeys.CreateOperator()
+		opk, _ := okp.PublicKey()
+		oskp, _ := nkeys.CreateOperator()
+		ospk, _ := oskp.PublicKey()
+		oc := jwt.NewOperatorClaims(opk)
+		oc.Name = "O"
+		oc.SigningKeys.Add(ospk)
+		opJWT, err := oc.Encode(okp)
+		must(err)
+
+		akp, _ := nkeys.CreateAccount()
+		apk, _ := akp.PublicKey()
+		askp, _ := nkeys.CreateAccount()
+		aspk, _ := askp.PublicKey()
+		ac := jwt.NewAccountClaims(apk)
+		ac.Name = "A"
+		ac.SigningKeys.Add(aspk)
+		// self-sign first (the README flow), then re-sign with the operator SIGNING key
+		selfJWT, err := ac.Encode(akp)
+		must(err)
+		ac2, err := jwt.DecodeAccountClaims(selfJWT)
+		must(err)
+		accJWT, err := ac2.Encode(oskp)
+		must(err)
+
+		ukp, _ := nkeys.CreateUser()
+		upk, _ := ukp.PublicKey()
+		uc := jwt.NewUserClaims(upk)
+		uc.IssuerAccount = apk
+		userJWT, err := uc.Encode(askp)
+		must(err)
+		useed, _ := ukp.Seed()
+		creds, err := jwt.FormatUserConfig(userJWT, useed)
+		must(err)
+
+		for name, content := range map[string]string{
+			"op.jwt": opJWT, "acc-self.jwt": selfJWT, "acc.jwt": accJWT,
+			"user.jwt": userJWT, "u.creds": string(creds),
+		} {
+			must(os.WriteFile(dir+"/"+name, []byte(content), 0600))
+		}
+		fmt.Println("OK")
+	case "decode": // jwt file → type + iss + sub (Decode = authenticated)
+		data, err := os.ReadFile(os.Args[2])
+		must(err)
+		c, err := jwt.Decode(strings.TrimSpace(string(data)))
+		must(err)
+		fmt.Printf("GO-DECODE-OK type=%v iss=%s sub=%s\n", c.ClaimType(), c.Claims().Issuer, c.Claims().Subject)
+	case "creds": // creds file → parse jwt out and Decode it
+		data, err := os.ReadFile(os.Args[2])
+		must(err)
+		token, err := jwt.ParseDecoratedJWT(data)
+		must(err)
+		_, err = jwt.Decode(token)
+		must(err)
+		fmt.Println("GO-CREDS-OK")
+	case "expired": // opseed → operator jwt with exp in the past (exp < iat)
+		seed, err := os.ReadFile(os.Args[2])
+		must(err)
+		okp, err := nkeys.FromSeed([]byte(strings.TrimSpace(string(seed))))
+		must(err)
+		opk, _ := okp.PublicKey()
+		oc := jwt.NewOperatorClaims(opk)
+		oc.Expires = 1000000000 // 2001 — long past
+		s, err := oc.Encode(okp)
+		must(err)
+		fmt.Println(s)
+	}
+}

@@ -238,6 +238,13 @@ if (JWT_BUILD_TESTS AND BUILD_TESTING)
     target_link_libraries(e2e_test PRIVATE jwt ${GTEST_LIBS} Threads::Threads)
     target_include_directories(e2e_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
+    # Interop driver: the C++ half of tests/interop/run.sh (the live Go↔C++
+    # matrix). Built with tests; the matrix needs a Go toolchain and runs via
+    # the script / CI interop job, not ctest.
+    add_executable(cpp_driver tests/interop/cpp_driver.cpp)
+    target_compile_options(cpp_driver PRIVATE ${JWT_WARNING_FLAGS})
+    target_link_libraries(cpp_driver PRIVATE jwt)
+
     include(GoogleTest)
     gtest_discover_tests(jwt_test)
     gtest_discover_tests(claims_test)

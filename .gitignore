@@ -114,3 +114,6 @@ local.properties
 *.suo
 *.userosscache
 *.sln.docstates
+
+# interop probe binary (built by tests/interop/run.sh)
+tests/interop/probe/probe
