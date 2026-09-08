@@ -1,0 +1,12 @@
+jwt-cpp
+Copyright 2025-2026 Steve Weiland
+
+This product is a C++ port of the NATS JWT library
+(https://github.com/nats-io/jwt), Copyright The NATS Authors,
+licensed under the Apache License, Version 2.0.
+
+Ed25519 signing and NKeys serialization are provided by nkeys-cpp
+(https://github.com/steve-weiland/nkeys-cpp), Apache License 2.0,
+fetched at build time. JSON handling is provided by nlohmann/json
+(MIT License), fetched at build time. Neither is vendored in this
+repository.

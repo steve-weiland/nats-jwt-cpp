@@ -94,4 +94,7 @@ jwt++ --generate-creds --inkey user.seed user.jwt
 
 ## License
 
-TBD - Compatible with NATS and nkeys-cpp licensing.
+Licensed under the [Apache License 2.0](LICENSE) — the same license as the
+Go [NATS JWT](https://github.com/nats-io/jwt) library this project is a port
+of, and as [nkeys-cpp](https://github.com/steve-weiland/nkeys-cpp). See
+[NOTICE](NOTICE).
