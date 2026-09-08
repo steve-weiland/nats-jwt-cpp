@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "jwt/claims.hpp"
+#include "jwt/validation.hpp"
 #include "jwt/operator_claims.hpp"
 #include "jwt/account_claims.hpp"
 #include "jwt/user_claims.hpp"
@@ -88,19 +89,18 @@ TEST(OperatorClaimsTest, ValidateFailsForNonOperatorSubject) {
     EXPECT_THROW(claims.validate(), std::invalid_argument);
 }
 
-TEST(OperatorClaimsTest, ValidateFailsWhenExpiresBeforeIssuedAt) {
+TEST(OperatorClaimsTest, ExpiryIsValidityNotStructure) {
+    // Go encodes AND decodes already-expired tokens — being expired is a
+    // TIMING failure (validateExpiration), never a structural one. The old
+    // structural check made expired credentials undecodable, uninspectable.
     auto kp = nkeys::CreateOperator();
     jwt::OperatorClaims claims(kp->publicString());
+    auto jwt_str = claims.encode(kp->seedString());
+    auto decoded = jwt::decodeOperatorClaims(jwt_str);
 
-    // Encode sets issuedAt to current time, then decode will have issuedAt > 0
-    // But we can't directly test this without friend access, so we test via encode
-    auto jwt = claims.encode(kp->seedString());
-    auto decoded = jwt::decodeOperatorClaims(jwt);
-
-    // Set expires to before issuedAt
-    decoded->setExpires(1);  // Very old timestamp
-
-    EXPECT_THROW(decoded->validate(), std::invalid_argument);
+    decoded->setExpires(1);  // long past
+    EXPECT_NO_THROW(decoded->validate());
+    EXPECT_FALSE(jwt::validateExpiration(*decoded).valid);
 }
 
 // ============================================================================

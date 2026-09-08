@@ -243,16 +243,29 @@ TEST(JwtVerificationTest, CorruptedJwt) {
 
 // Test signature verification - wrong issuer
 TEST(JwtVerificationTest, WrongIssuer) {
+    // encode() now derives iss from the signing seed (fix #5), so a
+    // mis-signed token can't be MINTED through the API — forge it at the
+    // byte level: splice a different issuer into a validly signed payload.
     auto operator_kp = nkeys::CreateOperator();
     auto wrong_operator_kp = nkeys::CreateOperator();
 
     auto op_claims = jwt::OperatorClaims(operator_kp->publicString());
+    std::string token = op_claims.encode(operator_kp->seedString());
 
-    // Sign with wrong key
-    std::string jwt_string = op_claims.encode(wrong_operator_kp->seedString());
+    auto first = token.find('.');
+    auto second = token.find('.', first + 1);
+    auto payload_bytes = jwt::internal::base64url_decode(
+        token.substr(first + 1, second - first - 1));
+    std::string json(payload_bytes.begin(), payload_bytes.end());
+    auto pos = json.find(operator_kp->publicString());
+    ASSERT_NE(pos, std::string::npos);
+    json.replace(pos, operator_kp->publicString().size(), wrong_operator_kp->publicString());
+    std::span<const std::uint8_t> span(
+        reinterpret_cast<const std::uint8_t*>(json.data()), json.size());
+    std::string forged = token.substr(0, first + 1) +
+                         jwt::internal::base64url_encode(span) + token.substr(second);
 
-    // Verification should fail (issuer in payload doesn't match signing key)
-    EXPECT_FALSE(jwt::verify(jwt_string));
+    EXPECT_FALSE(jwt::verify(forged));
 }
 
 // Test malformed JWT - missing parts
@@ -566,14 +579,33 @@ TEST(DecodeAuthTest, TamperedOperatorTokenFailsDecode) {
 
 TEST(DecodeAuthTest, TokenSignedByOtherKeyFailsDecode) {
     // iss says account A, but the bytes were signed by account B — the
-    // signature must be checked against the EMBEDDED issuer.
+    // signature must be checked against the EMBEDDED issuer. encode() can no
+    // longer mint this (fix #5 derives iss from the seed), so the forgery is
+    // hand-assembled: payload claiming A, signature by B over those bytes.
     auto a = nkeys::CreateAccount();
     auto b = nkeys::CreateAccount();
     auto user_kp = nkeys::CreateUser();
-    jwt::UserClaims claims(user_kp->publicString());
-    claims.setIssuer(a->publicString());
-    auto token = claims.encode(b->seedString());
-    EXPECT_THROW((void)jwt::decodeUserClaims(token), std::exception);
+
+    std::string header = R"({"typ":"JWT","alg":"ed25519-nkey"})";
+    std::string payload = R"({"iat":1700000000,"iss":")" + a->publicString() +
+                          R"(","jti":"x","sub":")" + user_kp->publicString() +
+                          R"(","nats":{"type":"user","version":2}})";
+    auto b64 = [](const std::string& s) {
+        std::span<const std::uint8_t> sp(
+            reinterpret_cast<const std::uint8_t*>(s.data()), s.size());
+        return jwt::internal::base64url_encode(sp);
+    };
+    std::string signing_input = b64(header) + "." + b64(payload);
+    auto kp = nkeys::FromSeed(b->seedString());
+    std::span<const std::uint8_t> si(
+        reinterpret_cast<const std::uint8_t*>(signing_input.data()), signing_input.size());
+    auto sig = kp->sign(si);
+    std::string forged = signing_input + "." + jwt::internal::base64url_encode(sig);
+
+    EXPECT_THROW((void)jwt::decodeUserClaims(forged), std::exception);
+    // ...while the signature itself IS a valid signature by B: only the
+    // issuer binding makes it a forgery.
+    EXPECT_TRUE(kp->verify(si, sig));
 }
 
 TEST(DecodeAuthTest, GenericDecodeRejectsWrongAlgorithmHeader) {

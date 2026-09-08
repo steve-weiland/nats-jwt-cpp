@@ -35,12 +35,6 @@ std::string createHeader() {
     return header.dump();
 }
 
-std::vector<std::uint8_t> signData(const std::string& seed,
-                                     std::span<const std::uint8_t> data) {
-    auto keypair = nkeys::FromSeed(seed);
-    return keypair->sign(data);
-}
-
 JwtParts parseJwt(std::string_view jwt) {
     // Cap before doing ANY work (Go: MaxTokenSize, checked first in Decode)
     if (jwt.size() > MAX_JWT_SIZE) {

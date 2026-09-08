@@ -2,6 +2,7 @@
 #include "jwt/jwt_constants.hpp"
 #include "base64url.hpp"
 #include "jwt_utils.hpp"
+#include <nkeys/nkeys.hpp>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 
@@ -44,11 +45,20 @@ std::string OperatorClaims::encode(const std::string& seed) const {
     using namespace internal;
     using json = nlohmann::json;
 
+    // Go's doEncode: the issuer IS the signing key — derived, never taken on
+    // trust from a setter (iss can then never disagree with the signature) —
+    // and iat is stamped fresh at every encode.
+    auto keypair = nkeys::FromSeed(seed);
+    impl_->issuer_ = keypair->publicString();
+    if (!nkeys::IsValidPublicOperatorKey(impl_->issuer_)) {
+        throw std::invalid_argument("Operator JWTs must be signed by an operator key");
+    }
+    impl_->issuedAt_ = getCurrentTimestamp();
+
     validate();
 
-    // Auto-generate JTI and issuedAt
     std::string jti = generateJti();
-    std::int64_t iat = (impl_->issuedAt_ == 0) ? getCurrentTimestamp() : impl_->issuedAt_;
+    std::int64_t iat = impl_->issuedAt_;
 
     // Build payload JSON
     json payload = {
@@ -99,7 +109,7 @@ std::string OperatorClaims::encode(const std::string& seed) const {
         signing_input.size()
     );
 
-    auto signature_bytes = signData(seed, signing_bytes);
+    auto signature_bytes = keypair->sign(signing_bytes);
     std::string signature_b64 = base64url_encode(signature_bytes);
 
     return signing_input + "." + signature_b64;
@@ -114,10 +124,6 @@ void OperatorClaims::validate() const {
     }
     if (impl_->subject_[0] != 'O') {
         throw std::invalid_argument("Operator subject must start with 'O'");
-    }
-    if (impl_->expires_ > 0 && impl_->issuedAt_ > 0 &&
-        impl_->expires_ <= impl_->issuedAt_) {
-        throw std::invalid_argument("Expiration must be after issuedAt");
     }
 }
 

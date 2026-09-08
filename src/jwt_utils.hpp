@@ -19,13 +19,6 @@ std::int64_t getCurrentTimestamp();
 /// @return JSON string: {"typ":"JWT","alg":"ed25519-nkey"}
 std::string createHeader();
 
-/// Sign data with Ed25519 key and return signature bytes
-/// @param seed Ed25519 seed string (e.g., "SOABC...")
-/// @param data Data to sign
-/// @return 64-byte Ed25519 signature
-std::vector<std::uint8_t> signData(const std::string& seed,
-                                     std::span<const std::uint8_t> data);
-
 /// Parsed JWT components
 struct JwtParts {
     std::string header_b64;

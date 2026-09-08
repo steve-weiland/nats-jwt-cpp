@@ -149,16 +149,15 @@ TEST(ValidationTest, InvalidIssuerChain) {
     jwt::OperatorClaims op_claims(operator_kp->publicString());
     std::string op_jwt = op_claims.encode(operator_kp->seedString());
 
-    // Create account claiming to be signed by operator, but actually signed by wrong operator
+    // Since encode() derives iss from the seed (fix #5), signing with the
+    // wrong operator yields a VALID token — issued by the wrong identity.
+    // The chain check is what must reject it.
     jwt::AccountClaims acc_claims(account_kp->publicString());
-    acc_claims.setIssuer(operator_kp->publicString());
     std::string acc_jwt = acc_claims.encode(wrong_operator_kp->seedString());
 
-    // Decode is authenticated (fix #2): a token whose iss claims the operator
-    // but whose bytes were signed by a DIFFERENT key never reaches the caller —
-    // pre-fix this test decoded it and called its issuer chain "valid".
     auto op_decoded = jwt::decode(op_jwt);
-    EXPECT_THROW((void)jwt::decode(acc_jwt), std::exception);
+    auto acc_decoded = jwt::decode(acc_jwt);
+    EXPECT_FALSE(jwt::validateIssuerChain(*acc_decoded, *op_decoded).valid);
 }
 
 TEST(ValidationTest, BrokenIssuerChain) {
@@ -553,4 +552,85 @@ TEST(TrustModelTest, UserIssuerAccountMustMatchAccountSubject) {
     good.setIssuerAccount(akp->publicString());
     auto goodUser = jwt::decodeUserClaims(good.encode(askp->seedString()));
     EXPECT_TRUE(jwt::validateIssuerChain(*goodUser, *acc).valid);
+}
+
+
+// ============================================================================
+// Encode identity (fix #5) + expiry semantics (fix #6) — Go derives the
+// issuer FROM the signing keypair at encode (iss can never disagree with the
+// signature) and always stamps iat=now; expiry is validity, not structure.
+// ============================================================================
+
+TEST(EncodeIdentityTest, IssuerIsDerivedFromTheSigningSeed) {
+    // Pre-fix: setIssuer(A) + encode(B) minted a token claiming A but signed
+    // by B — silently unverifiable, the wrong identity at a distance.
+    auto a = nkeys::CreateAccount();
+    auto b = nkeys::CreateAccount();
+    auto ukp = nkeys::CreateUser();
+    jwt::UserClaims claims(ukp->publicString());
+    claims.setIssuer(a->publicString());
+    auto token = claims.encode(b->seedString());
+
+    auto decoded = jwt::decodeUserClaims(token);  // authenticated decode
+    EXPECT_EQ(decoded->issuer(), b->publicString());
+    EXPECT_TRUE(jwt::verify(token));
+}
+
+TEST(EncodeIdentityTest, NoSetIssuerNeeded) {
+    // The README's setIssuer-then-encode dance is redundant in Go and now
+    // here: the seed IS the issuer.
+    auto akp = nkeys::CreateAccount();
+    auto ukp = nkeys::CreateUser();
+    jwt::UserClaims claims(ukp->publicString());
+    auto token = claims.encode(akp->seedString());
+    EXPECT_EQ(jwt::decodeUserClaims(token)->issuer(), akp->publicString());
+}
+
+TEST(EncodeIdentityTest, EncodeRejectsWrongSignerType) {
+    // Go's ExpectedPrefixes at encode: users are issued by accounts.
+    auto okp = nkeys::CreateOperator();
+    auto ukp = nkeys::CreateUser();
+    jwt::UserClaims claims(ukp->publicString());
+    claims.setIssuer(okp->publicString());
+    EXPECT_THROW((void)claims.encode(okp->seedString()), std::invalid_argument);
+
+    // ...and operators are issued by operators.
+    auto akp = nkeys::CreateAccount();
+    jwt::OperatorClaims oc(okp->publicString());
+    EXPECT_THROW((void)oc.encode(akp->seedString()), std::invalid_argument);
+}
+
+TEST(EncodeIdentityTest, EncodeAlwaysStampsIatNow) {
+    // The Go-minted fixture carries a genuinely old iat, so a preserved
+    // timestamp can't slip past this within the test's own second (the first
+    // draft of this test did exactly that — vacuous).
+    auto old_claims = jwt::decodeOperatorClaims(readFixtureJwt("operator-expired.jwt"));
+    const auto oldIat = old_claims->issuedAt();
+    auto before = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    ASSERT_LT(oldIat, before);
+
+    // Re-encode with a fresh operator seed: iat restamps, issuer re-derives.
+    auto fresh = nkeys::CreateOperator();
+    auto again = jwt::decodeOperatorClaims(old_claims->encode(fresh->seedString()));
+    EXPECT_GE(again->issuedAt(), before);
+    EXPECT_EQ(again->issuer(), fresh->publicString());
+}
+
+TEST(ExpirySemanticsTest, GoMintedExpiredTokenDecodes) {
+    // Golden: the live Go library encoded this operator token with
+    // Expires=1000000000 (2001). Go decodes it; pre-fix C++ threw
+    // "Expiration must be after issuedAt" at decode.
+    auto claims = jwt::decodeOperatorClaims(readFixtureJwt("operator-expired.jwt"));
+    EXPECT_EQ(claims->expires(), 1000000000);
+    EXPECT_FALSE(jwt::validateExpiration(*claims).valid);
+}
+
+TEST(ExpirySemanticsTest, EncodingAlreadyExpiredIsLegal) {
+    auto okp = nkeys::CreateOperator();
+    jwt::OperatorClaims claims(okp->publicString());
+    claims.setExpires(1000000000);
+    auto token = claims.encode(okp->seedString());
+    auto decoded = jwt::decodeOperatorClaims(token);
+    EXPECT_EQ(decoded->expires(), 1000000000);
 }
