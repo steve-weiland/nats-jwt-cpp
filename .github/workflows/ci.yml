@@ -1,0 +1,73 @@
+# CI — the gates this repo runs locally, automated (nkeys-cpp pattern):
+#   test        build + full ctest on Linux (glibc) and macOS, warnings-as-errors
+#   alpine      musl gate, verbatim from CLAUDE.md
+#   sanitizers  ASAN + UBSAN over the full suite (fetched, instrumented GTest)
+#   interop     the live Go↔C++ matrix (tests/interop/run.sh): authenticated
+#               decode both ways, creds parseability via the real armor regex,
+#               the Go canonical chain through strict validation, tamper
+#               rejection on both sides
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DJWT_WARNINGS_AS_ERRORS=ON
+      - name: Build
+        run: cmake --build build -j
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  alpine:
+    name: test (alpine musl)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build and test on alpine:3.20
+        run: |
+          docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
+            'apk add -q build-base cmake linux-headers git && cp -r /src /w && cd /w && \
+             rm -rf build* cmake-build-* && cmake -S . -B b && cmake --build b -j && \
+             ctest --test-dir b --output-on-failure'
+
+  sanitizers:
+    name: ASAN + UBSAN
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure
+        run: >-
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+          -DJWT_ENABLE_ASAN=ON -DJWT_ENABLE_UBSAN=ON
+      - name: Build
+        run: cmake --build build -j
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  interop:
+    name: Go interop matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: tests/interop/probe/go.mod
+          cache-dependency-path: tests/interop/probe/go.sum
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build -j
+      - name: Run matrix
+        run: ./tests/interop/run.sh build

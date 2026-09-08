@@ -18,7 +18,7 @@ static std::string slurp(const char* p) {
     return s;
 }
 
-int main(int argc, char** argv) try {
+int main([[maybe_unused]] int argc, char** argv) try {
     std::string mode = argv[1];
     if (mode == "decode") {
         std::string type = argv[2], tok = slurp(argv[3]);
