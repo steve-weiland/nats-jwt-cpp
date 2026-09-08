@@ -7,7 +7,7 @@ Thank you for your interest in contributing to jwt-cpp! This document provides g
 ### Prerequisites
 
 - C++20 compatible compiler (GCC 10+, Clang 12+, MSVC 19.29+)
-- CMake 3.20 or higher
+- CMake 3.21 or higher
 - Git
 - Basic knowledge of JWT and cryptography (helpful but not required)
 
@@ -149,21 +149,21 @@ int x = static_cast<int>(value); // Yes!
 ### Error Handling
 
 **Exception Policy**
-- Use exceptions for error conditions
-- Prefer `std::invalid_argument` for bad input (malformed JWT, invalid claims)
-- Prefer `std::runtime_error` for runtime failures (signature verification failed)
+- Throw only the typed errors from `jwt_errors.hpp` — pick the category:
+  `MalformedTokenError` (not a parseable JWT), `InvalidClaimsError` (parses
+  but wrong: header/type/version/prefixes/fields), `SignatureError`
+  (authentication failed). Never a bare std exception — callers rely on
+  `catch (jwt::Error)` seeing everything this library throws. Key-material
+  failures propagate from nkeys-cpp as `nkeys::Error`.
 - Never throw from destructors or `noexcept` functions
 
 **Error Message Format**
 ```cpp
 // ✅ Good: Descriptive with component and reason
-throw std::invalid_argument("Invalid JWT: missing signature component");
-
-// ✅ Good: Specific to JWT operations
-throw std::runtime_error("JWT signature verification failed");
+throw MalformedTokenError("Invalid JWT: missing signature component");
 
 // ❌ Bad: Vague or abbreviated
-throw std::invalid_argument("bad jwt");
+throw MalformedTokenError("bad jwt");
 ```
 
 ### Memory Safety

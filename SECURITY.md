@@ -39,7 +39,14 @@ If you discover a security vulnerability, please report it privately:
 - Required field validation
 
 **Signature Verification**
-- Always verify signature before trusting claims
+- `decode()`/`decodeXClaims()` are AUTHENTICATED: the Ed25519 signature over
+  `header.payload` is verified against the embedded issuer before any claims
+  are returned (Go-parity). A tampered or mis-signed token throws
+  `jwt::SignatureError`.
+- Verification proves the token was signed by the key it NAMES — trust in
+  that key comes from chain validation (`validateChain` /
+  `validateIssuerChain`) against an operator you already trust, never from
+  the token itself.
 - Constant-time comparison (via nkeys-cpp)
 - Key type validation (User JWT signed by Account key, etc.)
 

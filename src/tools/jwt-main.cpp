@@ -43,7 +43,10 @@ Options:
     --help, -h            Show this help
     --type <type>         Claim type: operator, account, user (for encode)
     --inkey <file>        Input seed/key file (subject for encode)
-    --sign-key <file>     Signing seed file (for account/user JWTs)
+    --sign-key <file>     Signing seed file; the JWT's issuer is DERIVED from
+                          it (defaults to --inkey: self-signed)
+    --name <name>         Claim name (for encode)
+    --issuer-account <k>  issuer_account for users issued by a signing key
     --out <file>          Output file (default: stdout)
     --compact             Compact JSON output (for decode)
 
@@ -51,11 +54,11 @@ Examples:
     # Encode operator JWT (self-signed)
     jwt++ --encode --type operator --inkey operator.seed
 
-    # Encode account JWT (signed by operator)
-    jwt++ --encode --type account --inkey account.seed --sign-key operator.seed --issuer <operator_pub>
+    # Encode account JWT (signed by operator; issuer derived from sign-key)
+    jwt++ --encode --type account --inkey account.seed --sign-key operator.seed
 
     # Encode user JWT (signed by account)
-    jwt++ --encode --type user --inkey user.seed --sign-key account.seed --issuer <account_pub>
+    jwt++ --encode --type user --inkey user.seed --sign-key account.seed
 
     # Decode JWT
     jwt++ --decode operator.jwt
@@ -117,12 +120,8 @@ void encodeCommand(const cmd_args& args) {
         auto kp = nkeys::FromSeed(seed);
         jwt::AccountClaims claims(kp->publicString());
 
-        auto issuer_opt = args.get("issuer");
-        if (!issuer_opt) {
-            throw std::runtime_error("--issuer <operator_public_key> required for account");
-        }
-        claims.setIssuer(*issuer_opt);
-
+        // The issuer is derived from --sign-key (or --inkey when self-signed);
+        // there is nothing to pass.
         if (auto name = args.get("name")) {
             claims.setName(*name);
         }
@@ -132,12 +131,6 @@ void encodeCommand(const cmd_args& args) {
     } else if (type == "user") {
         auto kp = nkeys::FromSeed(seed);
         jwt::UserClaims claims(kp->publicString());
-
-        auto issuer_opt = args.get("issuer");
-        if (!issuer_opt) {
-            throw std::runtime_error("--issuer <account_public_key> required for user");
-        }
-        claims.setIssuer(*issuer_opt);
 
         if (auto name = args.get("name")) {
             claims.setName(*name);
