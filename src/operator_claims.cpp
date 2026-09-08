@@ -166,6 +166,13 @@ std::unique_ptr<OperatorClaims> decodeOperatorClaims(const std::string& jwt) {
     // Extract required fields
     std::string subject = payload.at("sub").get<std::string>();
     std::string issuer = payload.at("iss").get<std::string>();
+
+    // Decode is AUTHENTICATED, as in Go: the signature over header.payload
+    // must verify against the embedded issuer, or the claims never reach the
+    // caller (an unauthenticated decode hands out attacker-edited claims).
+    if (!verifySignature(issuer, parts.signing_input, parts.signature_b64)) {
+        throw std::invalid_argument("JWT signature verification failed");
+    }
     std::int64_t iat = payload.at("iat").get<std::int64_t>();
 
     // Create OperatorClaims object

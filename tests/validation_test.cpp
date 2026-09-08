@@ -153,13 +153,11 @@ TEST(ValidationTest, InvalidIssuerChain) {
     acc_claims.setIssuer(operator_kp->publicString());
     std::string acc_jwt = acc_claims.encode(wrong_operator_kp->seedString());
 
+    // Decode is authenticated (fix #2): a token whose iss claims the operator
+    // but whose bytes were signed by a DIFFERENT key never reaches the caller —
+    // pre-fix this test decoded it and called its issuer chain "valid".
     auto op_decoded = jwt::decode(op_jwt);
-    auto acc_decoded = jwt::decode(acc_jwt);
-
-    // The issuer chain will be valid (operator subject matches account issuer)
-    // But signature verification would fail (not tested here)
-    auto result = jwt::validateIssuerChain(*acc_decoded, *op_decoded);
-    EXPECT_TRUE(result.valid);
+    EXPECT_THROW((void)jwt::decode(acc_jwt), std::exception);
 }
 
 TEST(ValidationTest, BrokenIssuerChain) {

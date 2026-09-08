@@ -42,6 +42,13 @@ std::vector<std::uint8_t> signData(const std::string& seed,
 }
 
 JwtParts parseJwt(std::string_view jwt) {
+    // Cap before doing ANY work (Go: MaxTokenSize, checked first in Decode)
+    if (jwt.size() > MAX_JWT_SIZE) {
+        throw std::invalid_argument(
+            "Token size " + std::to_string(jwt.size()) +
+            " exceeds maximum of " + std::to_string(MAX_JWT_SIZE) + " bytes");
+    }
+
     // Find the two dots separating header.payload.signature
     size_t first_dot = jwt.find('.');
     if (first_dot == std::string_view::npos) {

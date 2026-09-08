@@ -515,3 +515,97 @@ int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
+
+
+// ============================================================================
+// Decode authentication (fix #2) — Go's Decode is parse + signature verify +
+// size cap; an unauthenticated decode hands attacker-edited claims to the
+// caller (measured: a name=TAMPERED-ADMIN payload swap decoded fine here
+// while Go failed with "claim failed V2 signature verification").
+// ============================================================================
+
+namespace {
+    // Re-encode the payload with one field changed, keeping the signature.
+    std::string tamperName(const std::string& token, const std::string& newName) {
+        auto first = token.find('.');
+        auto second = token.find('.', first + 1);
+        auto payload_b64 = token.substr(first + 1, second - first - 1);
+        auto bytes = jwt::internal::base64url_decode(payload_b64);
+        std::string json(bytes.begin(), bytes.end());
+        auto pos = json.find("\"name\":\"");
+        EXPECT_NE(pos, std::string::npos) << "token has no name field to tamper";
+        auto valStart = pos + 8;
+        auto valEnd = json.find('"', valStart);
+        json = json.substr(0, valStart) + newName + json.substr(valEnd);
+        std::span<const std::uint8_t> span(
+            reinterpret_cast<const std::uint8_t*>(json.data()), json.size());
+        return token.substr(0, first + 1) + jwt::internal::base64url_encode(span) +
+               token.substr(second);
+    }
+}
+
+TEST(DecodeAuthTest, TamperedUserTokenFailsDecode) {
+    auto account_kp = nkeys::CreateAccount();
+    auto user_kp = nkeys::CreateUser();
+    jwt::UserClaims claims(user_kp->publicString());
+    claims.setIssuer(account_kp->publicString());
+    claims.setName("alice");
+    auto token = claims.encode(account_kp->seedString());
+
+    auto tampered = tamperName(token, "TAMPERED-ADMIN");
+    EXPECT_THROW((void)jwt::decodeUserClaims(tampered), std::exception);
+    EXPECT_THROW((void)jwt::decode(tampered), std::exception);
+    // the untampered token still decodes
+    EXPECT_EQ(jwt::decodeUserClaims(token)->name().value_or(""), "alice");
+}
+
+TEST(DecodeAuthTest, TamperedOperatorTokenFailsDecode) {
+    auto op_kp = nkeys::CreateOperator();
+    jwt::OperatorClaims claims(op_kp->publicString());
+    claims.setName("op");
+    auto token = claims.encode(op_kp->seedString());
+    EXPECT_THROW((void)jwt::decodeOperatorClaims(tamperName(token, "evil")), std::exception);
+}
+
+TEST(DecodeAuthTest, TokenSignedByOtherKeyFailsDecode) {
+    // iss says account A, but the bytes were signed by account B — the
+    // signature must be checked against the EMBEDDED issuer.
+    auto a = nkeys::CreateAccount();
+    auto b = nkeys::CreateAccount();
+    auto user_kp = nkeys::CreateUser();
+    jwt::UserClaims claims(user_kp->publicString());
+    claims.setIssuer(a->publicString());
+    auto token = claims.encode(b->seedString());
+    EXPECT_THROW((void)jwt::decodeUserClaims(token), std::exception);
+}
+
+TEST(DecodeAuthTest, GenericDecodeRejectsWrongAlgorithmHeader) {
+    // Only the typed decoders checked the header; generic decode() must too.
+    auto op_kp = nkeys::CreateOperator();
+    jwt::OperatorClaims claims(op_kp->publicString());
+    auto token = claims.encode(op_kp->seedString());
+    auto first = token.find('.');
+    std::string badHeader = R"({"typ":"JWT","alg":"none"})";
+    std::span<const std::uint8_t> span(
+        reinterpret_cast<const std::uint8_t*>(badHeader.data()), badHeader.size());
+    auto forged = jwt::internal::base64url_encode(span) + token.substr(first);
+    EXPECT_THROW((void)jwt::decode(forged), std::exception);
+}
+
+TEST(DecodeAuthTest, OversizedTokenRejected) {
+    // Go caps tokens at 1MB before doing ANY work on them. The token here is
+    // VALID (signed, well-formed) — only its size makes it rejectable, so
+    // this can't pass by accident on a parse error.
+    auto op_kp = nkeys::CreateOperator();
+    jwt::OperatorClaims claims(op_kp->publicString());
+    claims.setName(std::string(jwt::MAX_JWT_SIZE, 'x'));
+    auto huge = claims.encode(op_kp->seedString());
+    ASSERT_GT(huge.size(), jwt::MAX_JWT_SIZE);
+    EXPECT_THROW((void)jwt::decode(huge), std::exception);
+    EXPECT_THROW((void)jwt::decodeOperatorClaims(huge), std::exception);
+    EXPECT_FALSE(jwt::verify(huge));
+}
+
+TEST(DecodeAuthTest, MaxSizeMatchesGo) {
+    EXPECT_EQ(jwt::MAX_JWT_SIZE, 1024u * 1024u) << "Go's MaxTokenSize is 1MB";
+}
