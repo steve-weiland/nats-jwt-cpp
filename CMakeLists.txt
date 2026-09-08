@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.21)  # PROJECT_IS_TOP_LEVEL
 
 # Project
 project(jwt-cpp LANGUAGES CXX)
@@ -10,6 +10,7 @@ option(JWT_ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(JWT_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(JWT_ENABLE_HARDENING "Enable security hardening flags" ON)
 option(JWT_USE_SYSTEM_NKEYS "Prefer system-installed nkeys-cpp if available" ON)
+option(JWT_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
 
 # --- Global settings -------------------------------------------------------
 set(CMAKE_CXX_STANDARD 20)
@@ -85,21 +86,21 @@ endif()
 if (NOT _have_nkeys)
     message(STATUS "System nkeys-cpp not found, using FetchContent to build from source")
     include(FetchContent)
+    # Pinned: GIT_TAG main made every build non-reproducible and let breaking
+    # upstream changes land silently. v1.1.0+ is also embed-clean (its tests,
+    # CLI, and install rules are PROJECT_IS_TOP_LEVEL-gated), which is what
+    # made the old BUILD_TESTING save/restore dance here removable — that
+    # dance captured BUILD_TESTING BEFORE include(CTest) defined it and
+    # force-restored the empty value, silently disabling THIS repo's entire
+    # test suite on every fresh clone ("No tests were found!!!").
     FetchContent_Declare(
         nkeys-cpp
         GIT_REPOSITORY https://github.com/steve-weiland/nkeys-cpp.git
-        GIT_TAG main
+        GIT_TAG v1.1.0
         GIT_SHALLOW TRUE
     )
-    # Configure nkeys-cpp build
-    set(_jwt_build_testing ${BUILD_TESTING})
     set(NKEYS_WARNINGS_AS_ERRORS ${JWT_WARNINGS_AS_ERRORS} CACHE BOOL "" FORCE)
-    set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
-
     FetchContent_MakeAvailable(nkeys-cpp)
-
-    # Restore BUILD_TESTING for jwt-cpp
-    set(BUILD_TESTING ${_jwt_build_testing} CACHE BOOL "" FORCE)
     message(STATUS "Built nkeys-cpp from source via FetchContent")
 endif()
 
@@ -150,8 +151,10 @@ target_include_directories(jwt++ PRIVATE
 )
 
 # --- Tests: jwt_test (GoogleTest) ------------------------------------------
-include(CTest)
-if (BUILD_TESTING)
+if (JWT_BUILD_TESTS)
+    include(CTest)
+endif()
+if (JWT_BUILD_TESTS AND BUILD_TESTING)
     # Threads are needed by GTest on POSIX
     find_package(Threads REQUIRED)
 
@@ -179,7 +182,13 @@ if (BUILD_TESTING)
         set(GTEST_LIBS GTest::GTest GTest::Main)
     endif()
 
+    # Absolute fixtures path so out-of-tree builds (CI, /tmp dirs) find them —
+    # the nkeys-cpp lesson: CWD-relative lookup only worked for in-tree builds.
+    set(JWT_FIXTURES_DEF
+        JWT_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+
     add_executable(jwt_test tests/jwt_test.cpp)
+    target_compile_definitions(jwt_test PRIVATE ${JWT_FIXTURES_DEF})
     target_link_libraries(jwt_test PRIVATE jwt ${GTEST_LIBS} Threads::Threads)
     target_include_directories(jwt_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
@@ -195,6 +204,7 @@ if (BUILD_TESTING)
     )
 
     add_executable(validation_test tests/validation_test.cpp)
+    target_compile_definitions(validation_test PRIVATE ${JWT_FIXTURES_DEF})
     target_link_libraries(validation_test PRIVATE jwt ${GTEST_LIBS} Threads::Threads)
     target_include_directories(validation_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 

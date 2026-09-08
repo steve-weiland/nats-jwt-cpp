@@ -358,10 +358,7 @@ TEST(FormatUserConfigTest, GeneratesValidCredsFile) {
 
 namespace {
     std::string readFixtureFile(const std::string& name) {
-        // In-tree build dirs sit one level below the repo root; the CI/test
-        // wiring item hardens this into a compile definition later.
-        std::ifstream f("tests/fixtures/" + name, std::ios::binary);
-        if (!f) f.open("../tests/fixtures/" + name, std::ios::binary);
+        std::ifstream f(std::string(JWT_TEST_FIXTURES_DIR "/") + name, std::ios::binary);
         EXPECT_TRUE(f.is_open()) << "fixture " << name;
         std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
         return s;

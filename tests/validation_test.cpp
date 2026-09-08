@@ -463,8 +463,7 @@ int main(int argc, char **argv) {
 
 namespace {
     std::string readFixtureJwt(const std::string& name) {
-        std::ifstream f("tests/fixtures/" + name, std::ios::binary);
-        if (!f) f.open("../tests/fixtures/" + name, std::ios::binary);
+        std::ifstream f(std::string(JWT_TEST_FIXTURES_DIR "/") + name, std::ios::binary);
         EXPECT_TRUE(f.is_open()) << "fixture " << name;
         std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
         while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
