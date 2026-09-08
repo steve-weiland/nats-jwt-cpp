@@ -85,9 +85,6 @@ TEST(ValidationTest, NotYetValidTokenIsInvalid) {
     auto kp = nkeys::CreateOperator();
     jwt::OperatorClaims claims(kp->publicString());
 
-    // Set issued at time far in the future
-    std::int64_t future = 9999999999;
-
     std::string jwt = claims.encode(kp->seedString());
     auto decoded = jwt::decode(jwt);
 

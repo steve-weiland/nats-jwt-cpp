@@ -271,26 +271,26 @@ TEST(JwtVerificationTest, WrongIssuer) {
 
 // Test malformed JWT - missing parts
 TEST(JwtDecodingTest, MalformedJwtMissingParts) {
-    EXPECT_THROW(jwt::decode("header.payload"), std::invalid_argument);
-    EXPECT_THROW(jwt::decode("onlyonepart"), std::invalid_argument);
-    EXPECT_THROW(jwt::decode(""), std::invalid_argument);
+    EXPECT_THROW((void)jwt::decode("header.payload"), std::invalid_argument);
+    EXPECT_THROW((void)jwt::decode("onlyonepart"), std::invalid_argument);
+    EXPECT_THROW((void)jwt::decode(""), std::invalid_argument);
 }
 
 // Test malformed JWT - too many parts
 TEST(JwtDecodingTest, MalformedJwtTooManyParts) {
-    EXPECT_THROW(jwt::decode("a.b.c.d"), std::invalid_argument);
+    EXPECT_THROW((void)jwt::decode("a.b.c.d"), std::invalid_argument);
 }
 
 // Test malformed JWT - empty parts
 TEST(JwtDecodingTest, MalformedJwtEmptyParts) {
-    EXPECT_THROW(jwt::decode(".payload.signature"), std::invalid_argument);
-    EXPECT_THROW(jwt::decode("header..signature"), std::invalid_argument);
-    EXPECT_THROW(jwt::decode("header.payload."), std::invalid_argument);
+    EXPECT_THROW((void)jwt::decode(".payload.signature"), std::invalid_argument);
+    EXPECT_THROW((void)jwt::decode("header..signature"), std::invalid_argument);
+    EXPECT_THROW((void)jwt::decode("header.payload."), std::invalid_argument);
 }
 
 // Test invalid Base64
 TEST(JwtDecodingTest, InvalidBase64) {
-    EXPECT_THROW(jwt::decode("!!!.@@@.###"), std::exception);
+    EXPECT_THROW((void)jwt::decode("!!!.@@@.###"), std::exception);
 }
 
 // Test type mismatch - decode account as operator
@@ -303,7 +303,7 @@ TEST(JwtDecodingTest, TypeMismatchAccountAsOperator) {
     std::string acc_jwt = acc_claims.encode(operator_kp->seedString());
 
     // Try to decode as operator - should throw
-    EXPECT_THROW(jwt::decodeOperatorClaims(acc_jwt), std::invalid_argument);
+    EXPECT_THROW((void)jwt::decodeOperatorClaims(acc_jwt), std::invalid_argument);
 }
 
 // Test type mismatch - decode user as account
@@ -316,7 +316,7 @@ TEST(JwtDecodingTest, TypeMismatchUserAsAccount) {
     std::string user_jwt = user_claims.encode(account_kp->seedString());
 
     // Try to decode as account - should throw
-    EXPECT_THROW(jwt::decodeAccountClaims(user_jwt), std::invalid_argument);
+    EXPECT_THROW((void)jwt::decodeAccountClaims(user_jwt), std::invalid_argument);
 }
 
 // Test minimal JWT (no optional fields)
@@ -424,8 +424,7 @@ TEST(FormatUserConfigTest, RejectsSeedNotMatchingJwtSubject) {
     claims.setIssuer(account_kp->publicString());
     std::string jwt_string = claims.encode(account_kp->seedString());
 
-    EXPECT_THROW(
-        jwt::formatUserConfig(jwt_string, other_kp->seedString()),
+    EXPECT_THROW((void)jwt::formatUserConfig(jwt_string, other_kp->seedString()),
         std::invalid_argument
     );
 }
@@ -437,16 +436,14 @@ TEST(FormatUserConfigTest, RejectsNonUserJwt) {
     jwt::OperatorClaims claims(operator_kp->publicString());
     std::string op_jwt = claims.encode(operator_kp->seedString());
 
-    EXPECT_THROW(
-        jwt::formatUserConfig(op_jwt, user_kp->seedString()),
+    EXPECT_THROW((void)jwt::formatUserConfig(op_jwt, user_kp->seedString()),
         std::invalid_argument
     );
 }
 
 TEST(FormatUserConfigTest, RejectsEmptyJwt) {
     auto user_kp = nkeys::CreateUser();
-    EXPECT_THROW(
-        jwt::formatUserConfig("", user_kp->seedString()),
+    EXPECT_THROW((void)jwt::formatUserConfig("", user_kp->seedString()),
         std::invalid_argument
     );
 }
@@ -459,8 +456,7 @@ TEST(FormatUserConfigTest, RejectsEmptySeed) {
     claims.setIssuer(account_kp->publicString());
     std::string jwt_string = claims.encode(account_kp->seedString());
 
-    EXPECT_THROW(
-        jwt::formatUserConfig(jwt_string, ""),
+    EXPECT_THROW((void)jwt::formatUserConfig(jwt_string, ""),
         std::invalid_argument
     );
 }
@@ -474,8 +470,7 @@ TEST(FormatUserConfigTest, RejectsNonUserSeed) {
     std::string jwt_string = claims.encode(account_kp->seedString());
 
     // Try to use account seed instead of user seed
-    EXPECT_THROW(
-        jwt::formatUserConfig(jwt_string, account_kp->seedString()),
+    EXPECT_THROW((void)jwt::formatUserConfig(jwt_string, account_kp->seedString()),
         std::invalid_argument
     );
 }
@@ -484,8 +479,7 @@ TEST(FormatUserConfigTest, RejectsNonUserSeed) {
 // rejected, not wrapped up as credentials.
 TEST(FormatUserConfigTest, RejectsUndecodableJwt) {
     auto user_kp = nkeys::CreateUser();
-    EXPECT_THROW(
-        jwt::formatUserConfig("header.payload.sig", user_kp->seedString()),
+    EXPECT_THROW((void)jwt::formatUserConfig("header.payload.sig", user_kp->seedString()),
         std::exception
     );
 }

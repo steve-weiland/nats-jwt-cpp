@@ -18,16 +18,20 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 include(GNUInstallDirs)
 
-# Helpful warnings (compiler-specific)
+# Helpful warnings (compiler-specific) — applied per-target to OUR code only.
+# The nkeys-cpp lesson, measured on a CI runner: a global add_compile_options
+# also compiles fetched third-party sources (GoogleTest, the fetched nkeys)
+# with -Werror, and a newer compiler's new warnings then break the build
+# inside code we don't own.
 if (MSVC)
-    add_compile_options(/W4)
+    set(JWT_WARNING_FLAGS /W4)
     if (JWT_WARNINGS_AS_ERRORS)
-        add_compile_options(/WX)
+        list(APPEND JWT_WARNING_FLAGS /WX)
     endif()
 else()
-    add_compile_options(-Wall -Wextra -Wpedantic)
+    set(JWT_WARNING_FLAGS -Wall -Wextra -Wpedantic)
     if (JWT_WARNINGS_AS_ERRORS)
-        add_compile_options(-Werror)
+        list(APPEND JWT_WARNING_FLAGS -Werror)
     endif()
 endif()
 
@@ -140,10 +144,12 @@ target_include_directories(jwt PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+target_compile_options(jwt PRIVATE ${JWT_WARNING_FLAGS})
 target_link_libraries(jwt PUBLIC nkeys nlohmann_json::nlohmann_json)
 
 # --- Executable: jwt++ -----------------------------------------------------
 add_executable(jwt++ src/tools/jwt-main.cpp)
+target_compile_options(jwt++ PRIVATE ${JWT_WARNING_FLAGS})
 target_link_libraries(jwt++ PRIVATE jwt)
 target_include_directories(jwt++ PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -159,7 +165,11 @@ if (JWT_BUILD_TESTS AND BUILD_TESTING)
     find_package(Threads REQUIRED)
 
     set(_have_gtest FALSE)
-    if (JWT_USE_SYSTEM_GTEST)
+    # Sanitizer builds must NOT link a system (uninstrumented) GTest — libc++'s
+    # ASAN container annotations disagree with uninstrumented code and GTest's
+    # own argv setup reports a bogus container-overflow before any test runs
+    # (measured in nkeys-cpp). Fetch and instrument it alongside the code.
+    if (JWT_USE_SYSTEM_GTEST AND NOT (JWT_ENABLE_ASAN OR JWT_ENABLE_UBSAN))
         find_package(GTest QUIET)
         if (GTest_FOUND)
             set(_have_gtest TRUE)
@@ -178,6 +188,17 @@ if (JWT_BUILD_TESTS AND BUILD_TESTING)
         set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
         FetchContent_MakeAvailable(googletest)
         set(GTEST_LIBS GTest::gtest GTest::gtest_main)
+        # Fetched GTest headers as system includes in OUR TUs, so our -Werror
+        # can't fail on warnings inside gtest's inline functions.
+        foreach(_gt gtest gtest_main gmock gmock_main)
+            if (TARGET ${_gt})
+                get_target_property(_gt_inc ${_gt} INTERFACE_INCLUDE_DIRECTORIES)
+                if (_gt_inc)
+                    set_target_properties(${_gt} PROPERTIES
+                            INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_gt_inc}")
+                endif()
+            endif()
+        endforeach()
     else()
         set(GTEST_LIBS GTest::GTest GTest::Main)
     endif()
@@ -188,15 +209,18 @@ if (JWT_BUILD_TESTS AND BUILD_TESTING)
         JWT_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
 
     add_executable(jwt_test tests/jwt_test.cpp)
+    target_compile_options(jwt_test PRIVATE ${JWT_WARNING_FLAGS})
     target_compile_definitions(jwt_test PRIVATE ${JWT_FIXTURES_DEF})
     target_link_libraries(jwt_test PRIVATE jwt ${GTEST_LIBS} Threads::Threads)
     target_include_directories(jwt_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
     add_executable(claims_test tests/claims_test.cpp)
+    target_compile_options(claims_test PRIVATE ${JWT_WARNING_FLAGS})
     target_link_libraries(claims_test PRIVATE jwt ${GTEST_LIBS} Threads::Threads)
     target_include_directories(claims_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
     add_executable(cmd_args_test tests/cmd_args_test.cpp)
+    target_compile_options(cmd_args_test PRIVATE ${JWT_WARNING_FLAGS})
     target_link_libraries(cmd_args_test PRIVATE ${GTEST_LIBS} Threads::Threads)
     target_include_directories(cmd_args_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/tools
@@ -204,11 +228,13 @@ if (JWT_BUILD_TESTS AND BUILD_TESTING)
     )
 
     add_executable(validation_test tests/validation_test.cpp)
+    target_compile_options(validation_test PRIVATE ${JWT_WARNING_FLAGS})
     target_compile_definitions(validation_test PRIVATE ${JWT_FIXTURES_DEF})
     target_link_libraries(validation_test PRIVATE jwt ${GTEST_LIBS} Threads::Threads)
     target_include_directories(validation_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
     add_executable(e2e_test tests/e2e_test.cpp)
+    target_compile_options(e2e_test PRIVATE ${JWT_WARNING_FLAGS})
     target_link_libraries(e2e_test PRIVATE jwt ${GTEST_LIBS} Threads::Threads)
     target_include_directories(e2e_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
