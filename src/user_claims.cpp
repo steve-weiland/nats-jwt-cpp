@@ -2,6 +2,7 @@
 #include "jwt/jwt_constants.hpp"
 #include "base64url.hpp"
 #include "jwt_utils.hpp"
+#include <nkeys/nkeys.hpp>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <sstream>
@@ -203,33 +204,32 @@ std::string formatUserConfig(const std::string& jwt, const std::string& seed) {
     if (jwt.empty()) {
         throw std::invalid_argument("JWT cannot be empty");
     }
-    if (seed.empty()) {
-        throw std::invalid_argument("Seed cannot be empty");
-    }
-    if (seed[0] != 'S' || seed[1] != 'U') {
+    if (seed.size() < 2 || seed[0] != 'S' || seed[1] != 'U') {
         throw std::invalid_argument("Seed must be a user seed (starting with 'SU')");
     }
 
-    std::ostringstream oss;
-
-    // JWT section
-    oss << "-----BEGIN NATS USER JWT-----\n";
-
-    // Wrap JWT at 64 characters per line for readability
-    for (size_t i = 0; i < jwt.length(); i += 64) {
-        oss << jwt.substr(i, 64) << "\n";
+    // Go's FormatUserConfig validates the BUNDLE, not just the strings: the
+    // token must decode as a user JWT, and the seed must belong to the JWT's
+    // subject — a mismatched pair fails at connect time, far from the mistake.
+    auto claims = decodeUserClaims(jwt);
+    auto kp = nkeys::FromSeed(seed);
+    if (kp->publicString() != claims->subject()) {
+        throw std::invalid_argument("nkey seed does not match the JWT subject");
     }
 
+    // Byte-identical to Go's FormatUserConfig (golden-tested against the live
+    // Go library). The JWT MUST be one unwrapped line: the armor regex used by
+    // Go and every NATS client captures a single line between the markers —
+    // wrapping made the file unparseable ("expected 3 chunks").
+    std::ostringstream oss;
+    oss << "-----BEGIN NATS USER JWT-----\n";
+    oss << jwt << "\n";
     oss << "------END NATS USER JWT------\n";
     oss << "\n";
-
-    // Warning message
     oss << "************************* IMPORTANT *************************\n";
     oss << "NKEY Seed printed below can be used to sign and prove identity.\n";
-    oss << "    NKEYs are sensitive and should be treated as secrets.\n";
+    oss << "NKEYs are sensitive and should be treated as secrets.\n";
     oss << "\n";
-
-    // Seed section
     oss << "-----BEGIN USER NKEY SEED-----\n";
     oss << seed << "\n";
     oss << "------END USER NKEY SEED------\n";

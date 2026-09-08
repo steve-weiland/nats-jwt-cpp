@@ -1,13 +1,13 @@
-# Placeholder - will contain sample NATS credentials file
-# Format:
-# -----BEGIN NATS USER JWT-----
-# <jwt>
-# ------END NATS USER JWT------
-#
-# ************************* IMPORTANT *************************
-# NKEY Seed printed below can be used to sign and prove identity.
-# NKEYs are sensitive and should be treated as secrets.
-#
-# -----BEGIN USER NKEY SEED-----
-# <seed>
-# ------END USER NKEY SEED------
+-----BEGIN NATS USER JWT-----
+eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ.eyJqdGkiOiJDT1M1WU5BREhGMjZZR09IRFMzS1NVU1FFNUNJQVBPQUlWSTczTFhLM0xLTjNSQkJKT1BRIiwiaWF0IjoxNzg4ODI2MTkxLCJpc3MiOiJBQ1BRWllUQlZaWk02SU9ITk1ESFBXVkJJSEFSNFhERDVVQzJJS0xPMkgyQkZYQU5BTVdWVlVKSyIsInN1YiI6IlVDSEdERlUzUVVVM1o0QVNJTVpGMk5PUTZEN1FTSERaTVZMSVlZSElZRkpLTUpSQzU2WTZWWlBaIiwibmF0cyI6eyJwdWIiOnt9LCJzdWIiOnt9LCJzdWJzIjotMSwiZGF0YSI6LTEsInBheWxvYWQiOi0xLCJpc3N1ZXJfYWNjb3VudCI6IkFBUExCVVVGQUZYSEtZU1lZSTZDQ1A1UkxJRDJDWU5TQ0FJTTNMQVpVWTZVRkg1QkNLTk1GVE9DIiwidHlwZSI6InVzZXIiLCJ2ZXJzaW9uIjoyfX0.tTOK4yHEKfcx7b6rH7o1Kk2UJGDJg0VysrrWCEV_MYyP6auZpaaRvhfApZWEz9f9D6DPCZDUA1Cr-MRKOpCSAg
+------END NATS USER JWT------
+
+************************* IMPORTANT *************************
+NKEY Seed printed below can be used to sign and prove identity.
+NKEYs are sensitive and should be treated as secrets.
+
+-----BEGIN USER NKEY SEED-----
+SUAJPLZCXBQRYAIKAPRDOOQG66NJPKNVL7DW6NNUOI3WGOCOOHY2IJBAOQ
+------END USER NKEY SEED------
+
+*************************************************************

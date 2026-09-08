@@ -356,7 +356,35 @@ TEST(FormatUserConfigTest, GeneratesValidCredsFile) {
     EXPECT_NE(creds.find(seed), std::string::npos);
 }
 
-TEST(FormatUserConfigTest, JwtIsWrappedAt64Chars) {
+namespace {
+    std::string readFixtureFile(const std::string& name) {
+        // In-tree build dirs sit one level below the repo root; the CI/test
+        // wiring item hardens this into a compile definition later.
+        std::ifstream f("tests/fixtures/" + name, std::ios::binary);
+        if (!f) f.open("../tests/fixtures/" + name, std::ios::binary);
+        EXPECT_TRUE(f.is_open()) << "fixture " << name;
+        std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        return s;
+    }
+    std::string trimNl(std::string s) {
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+        return s;
+    }
+}
+
+// The one output whose whole purpose is consumption by OTHER NATS software.
+// Golden: tests/fixtures/user.creds is the LIVE Go library's FormatUserConfig
+// output for fixtures user.jwt + user.seed — C++ must match byte for byte.
+// (The old 64-char wrapping broke the armor regex every NATS client uses:
+// Go ParseDecoratedJWT failed with "expected 3 chunks".)
+TEST(FormatUserConfigTest, MatchesGoByteForByte) {
+    const auto jwt_string = trimNl(readFixtureFile("user.jwt"));
+    const auto seed = trimNl(readFixtureFile("user.seed"));
+    const auto golden = readFixtureFile("user.creds");
+    EXPECT_EQ(jwt::formatUserConfig(jwt_string, seed), golden);
+}
+
+TEST(FormatUserConfigTest, JwtIsOneUnwrappedLine) {
     auto account_kp = nkeys::CreateAccount();
     auto user_kp = nkeys::CreateUser();
 
@@ -366,20 +394,42 @@ TEST(FormatUserConfigTest, JwtIsWrappedAt64Chars) {
     std::string jwt_string = claims.encode(account_kp->seedString());
     std::string creds = jwt::formatUserConfig(jwt_string, user_kp->seedString());
 
-    // Find the JWT section
-    size_t jwt_start = creds.find("-----BEGIN NATS USER JWT-----") + 30;
-    size_t jwt_end = creds.find("------END NATS USER JWT------");
+    // The armor regex used by NATS clients captures ONE line between the
+    // markers — the entire JWT must sit on it, unwrapped.
+    EXPECT_NE(creds.find("-----BEGIN NATS USER JWT-----\n" + jwt_string +
+                         "\n------END NATS USER JWT------\n"),
+              std::string::npos)
+        << "JWT must be a single unwrapped line between the armor markers";
+}
 
-    std::string jwt_section = creds.substr(jwt_start, jwt_end - jwt_start);
+// Go validates the bundle: the seed must belong to the JWT's subject —
+// otherwise the creds file fails at connect time, far from the mistake.
+TEST(FormatUserConfigTest, RejectsSeedNotMatchingJwtSubject) {
+    auto account_kp = nkeys::CreateAccount();
+    auto user_kp = nkeys::CreateUser();
+    auto other_kp = nkeys::CreateUser();
 
-    // Split into lines and check each line is <= 64 chars (plus newline)
-    std::istringstream iss(jwt_section);
-    std::string line;
-    while (std::getline(iss, line)) {
-        if (!line.empty()) {
-            EXPECT_LE(line.length(), 64) << "Line too long: " << line;
-        }
-    }
+    jwt::UserClaims claims(user_kp->publicString());
+    claims.setIssuer(account_kp->publicString());
+    std::string jwt_string = claims.encode(account_kp->seedString());
+
+    EXPECT_THROW(
+        jwt::formatUserConfig(jwt_string, other_kp->seedString()),
+        std::invalid_argument
+    );
+}
+
+TEST(FormatUserConfigTest, RejectsNonUserJwt) {
+    auto operator_kp = nkeys::CreateOperator();
+    auto user_kp = nkeys::CreateUser();
+
+    jwt::OperatorClaims claims(operator_kp->publicString());
+    std::string op_jwt = claims.encode(operator_kp->seedString());
+
+    EXPECT_THROW(
+        jwt::formatUserConfig(op_jwt, user_kp->seedString()),
+        std::invalid_argument
+    );
 }
 
 TEST(FormatUserConfigTest, RejectsEmptyJwt) {
@@ -419,17 +469,14 @@ TEST(FormatUserConfigTest, RejectsNonUserSeed) {
     );
 }
 
-TEST(FormatUserConfigTest, HandlesShortJwt) {
+// Go decodes the JWT before bundling — junk that isn't a user JWT is
+// rejected, not wrapped up as credentials.
+TEST(FormatUserConfigTest, RejectsUndecodableJwt) {
     auto user_kp = nkeys::CreateUser();
-
-    // Create a short fake JWT (less than 64 chars)
-    std::string short_jwt = "header.payload.sig";
-
-    std::string creds = jwt::formatUserConfig(short_jwt, user_kp->seedString());
-
-    // Verify it still has proper structure
-    EXPECT_NE(creds.find("-----BEGIN NATS USER JWT-----"), std::string::npos);
-    EXPECT_NE(creds.find(short_jwt), std::string::npos);
+    EXPECT_THROW(
+        jwt::formatUserConfig("header.payload.sig", user_kp->seedString()),
+        std::exception
+    );
 }
 
 TEST(FormatUserConfigTest, CredsFileCanBeWrittenToFile) {
