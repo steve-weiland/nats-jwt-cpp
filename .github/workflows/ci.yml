@@ -6,6 +6,9 @@
 #               decode both ways, creds parseability via the real armor regex,
 #               the Go canonical chain through strict validation, tamper
 #               rejection on both sides
+#   packaging   consumability gate (tests/packaging/test.sh): find_package
+#               static + shared against an installed nkeys-cpp (which also
+#               exercises the system-nkeys build path), pkg-config, embed
 name: CI
 
 on:
@@ -55,6 +58,18 @@ jobs:
         run: cmake --build build -j
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+  packaging:
+    name: packaging (find_package, pkg-config, embed)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run packaging gate
+        run: ./tests/packaging/test.sh
 
   interop:
     name: Go interop matrix

@@ -280,7 +280,7 @@ int main(int argc, char* argv[]) {
         auto args = cmd_args::parse(argc, argv);
 
         if (args.get("version").has_value() || args.get("v").has_value()) {
-            std::cout << "jwt++ version 1.0.0\n";
+            std::cout << "jwt++ version " JWTPP_VERSION "\n";
             return 0;
         }
 

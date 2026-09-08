@@ -1,0 +1,8 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(nkeys)
+
+include("${CMAKE_CURRENT_LIST_DIR}/natsjwtTargets.cmake")
+
+check_required_components(natsjwt)

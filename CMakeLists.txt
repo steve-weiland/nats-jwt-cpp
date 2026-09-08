@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.21)  # PROJECT_IS_TOP_LEVEL
 
 # Project
-project(nats-jwt-cpp LANGUAGES CXX)
+# The VERSION is the single source of truth: package config version file,
+# pkg-config, and jwt++ --version all derive from it.
+project(nats-jwt-cpp VERSION 1.0.0 LANGUAGES CXX)
 
 # --- Options ---------------------------------------------------------------
 option(JWT_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
@@ -11,6 +13,8 @@ option(JWT_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(JWT_ENABLE_HARDENING "Enable security hardening flags" ON)
 option(JWT_USE_SYSTEM_NKEYS "Prefer system-installed nkeys-cpp if available" ON)
 option(JWT_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
+option(JWT_BUILD_CLI "Build the jwt++ CLI tool" ${PROJECT_IS_TOP_LEVEL})
+option(JWT_INSTALL "Generate install and package-config rules" ${PROJECT_IS_TOP_LEVEL})
 
 # --- Global settings -------------------------------------------------------
 set(CMAKE_CXX_STANDARD 20)
@@ -133,28 +137,51 @@ set(JWT_SOURCES
 )
 
 # --- Library: jwt ----------------------------------------------------------
-add_library(jwt STATIC
+# Static by default; honors BUILD_SHARED_LIBS=ON. Installed as libnatsjwt —
+# "libjwt" is as collision-prone as the old repo name was.
+add_library(jwt
     ${JWT_SOURCES}
 )
+add_library(natsjwt::jwt ALIAS jwt)
+set_target_properties(jwt PROPERTIES
+    OUTPUT_NAME natsjwt
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR}
+)
+target_compile_features(jwt PUBLIC cxx_std_20)
 
 target_include_directories(jwt PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 target_include_directories(jwt PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 target_compile_options(jwt PRIVATE ${JWT_WARNING_FLAGS})
-target_link_libraries(jwt PUBLIC nkeys nlohmann_json::nlohmann_json)
+# nkeys::nkeys — the namespaced name exists on BOTH paths (find_package's
+# imported target, and the alias the FetchContent'd nkeys-cpp defines); the
+# bare `nkeys` linked before only existed on the FetchContent path, so the
+# system-nkeys configuration had never compiled (measured by the packaging
+# gate). No public header includes nkeys or nlohmann (pimpl), so both are
+# PRIVATE: nkeys propagates to static consumers as link-only via the export
+# + find_dependency; header-only nlohmann is build-time only.
+target_link_libraries(jwt PRIVATE
+    nkeys::nkeys
+    $<BUILD_INTERFACE:nlohmann_json::nlohmann_json>
+)
 
 # --- Executable: jwt++ -----------------------------------------------------
-add_executable(jwt++ src/tools/jwt-main.cpp)
-target_compile_options(jwt++ PRIVATE ${JWT_WARNING_FLAGS})
-target_link_libraries(jwt++ PRIVATE jwt)
-target_include_directories(jwt++ PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/tools
-)
+if (JWT_BUILD_CLI)
+    add_executable(jwt++ src/tools/jwt-main.cpp)
+    target_compile_options(jwt++ PRIVATE ${JWT_WARNING_FLAGS})
+    target_compile_definitions(jwt++ PRIVATE JWTPP_VERSION="${PROJECT_VERSION}")
+    target_link_libraries(jwt++ PRIVATE jwt nkeys::nkeys nlohmann_json::nlohmann_json)
+    target_include_directories(jwt++ PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/tools
+    )
+endif()
 
 # --- Tests: jwt_test (GoogleTest) ------------------------------------------
 if (JWT_BUILD_TESTS)
@@ -211,12 +238,12 @@ if (JWT_BUILD_TESTS AND BUILD_TESTING)
     add_executable(jwt_test tests/jwt_test.cpp)
     target_compile_options(jwt_test PRIVATE ${JWT_WARNING_FLAGS})
     target_compile_definitions(jwt_test PRIVATE ${JWT_FIXTURES_DEF})
-    target_link_libraries(jwt_test PRIVATE jwt ${GTEST_LIBS} Threads::Threads)
+    target_link_libraries(jwt_test PRIVATE jwt nkeys::nkeys nlohmann_json::nlohmann_json ${GTEST_LIBS} Threads::Threads)
     target_include_directories(jwt_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
     add_executable(claims_test tests/claims_test.cpp)
     target_compile_options(claims_test PRIVATE ${JWT_WARNING_FLAGS})
-    target_link_libraries(claims_test PRIVATE jwt ${GTEST_LIBS} Threads::Threads)
+    target_link_libraries(claims_test PRIVATE jwt nkeys::nkeys nlohmann_json::nlohmann_json ${GTEST_LIBS} Threads::Threads)
     target_include_directories(claims_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
     add_executable(cmd_args_test tests/cmd_args_test.cpp)
@@ -230,12 +257,12 @@ if (JWT_BUILD_TESTS AND BUILD_TESTING)
     add_executable(validation_test tests/validation_test.cpp)
     target_compile_options(validation_test PRIVATE ${JWT_WARNING_FLAGS})
     target_compile_definitions(validation_test PRIVATE ${JWT_FIXTURES_DEF})
-    target_link_libraries(validation_test PRIVATE jwt ${GTEST_LIBS} Threads::Threads)
+    target_link_libraries(validation_test PRIVATE jwt nkeys::nkeys nlohmann_json::nlohmann_json ${GTEST_LIBS} Threads::Threads)
     target_include_directories(validation_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
     add_executable(e2e_test tests/e2e_test.cpp)
     target_compile_options(e2e_test PRIVATE ${JWT_WARNING_FLAGS})
-    target_link_libraries(e2e_test PRIVATE jwt ${GTEST_LIBS} Threads::Threads)
+    target_link_libraries(e2e_test PRIVATE jwt nkeys::nkeys nlohmann_json::nlohmann_json ${GTEST_LIBS} Threads::Threads)
     target_include_directories(e2e_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
     # Interop driver: the C++ half of tests/interop/run.sh (the live Go↔C++
@@ -243,7 +270,7 @@ if (JWT_BUILD_TESTS AND BUILD_TESTING)
     # the script / CI interop job, not ctest.
     add_executable(cpp_driver tests/interop/cpp_driver.cpp)
     target_compile_options(cpp_driver PRIVATE ${JWT_WARNING_FLAGS})
-    target_link_libraries(cpp_driver PRIVATE jwt)
+    target_link_libraries(cpp_driver PRIVATE jwt nkeys::nkeys)
 
     include(GoogleTest)
     gtest_discover_tests(jwt_test)
@@ -253,28 +280,85 @@ if (JWT_BUILD_TESTS AND BUILD_TESTING)
     gtest_discover_tests(e2e_test)
 endif()
 
-# --- Install targets -------------------------------------------------------
+# --- Install + package config ----------------------------------------------
+if (JWT_INSTALL)
+    # Exporting requires the namespaced nkeys to be an IMPORTED (installed)
+    # target — a FetchContent-built nkeys is a real target outside any export
+    # set and install(EXPORT) would refuse it with a worse message.
+    if (NOT nkeys_FOUND)
+        message(WARNING
+            "Install rules disabled: exporting natsjwt requires a "
+            "system-installed nkeys-cpp (find_package(nkeys)) — a "
+            "FetchContent-built nkeys cannot be exported. Building works "
+            "normally; to install, install nkeys-cpp first.")
+        set(JWT_INSTALL OFF)
+    endif()
+endif()
+if (JWT_INSTALL)
 
-# Install static library
-install(TARGETS jwt
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)
+    include(CMakePackageConfigHelpers)
 
-# Install public headers - preserve include/jwt/ directory structure
-install(FILES
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/jwt.hpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/jwt_constants.hpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/jwt_errors.hpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/claims.hpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/operator_claims.hpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/account_claims.hpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/user_claims.hpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/validation.hpp
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/jwt
-)
+    install(TARGETS jwt
+        EXPORT natsjwtTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
 
-# Install CLI tool executable
-install(TARGETS jwt++
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
+    # Public headers - preserve include/jwt/ directory structure
+    install(FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/jwt.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/jwt_constants.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/jwt_errors.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/claims.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/operator_claims.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/account_claims.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/user_claims.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/validation.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/jwt
+    )
+
+    # find_package(natsjwt): namespaced target + config + version files
+    install(EXPORT natsjwtTargets
+        FILE natsjwtTargets.cmake
+        NAMESPACE natsjwt::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/natsjwt
+    )
+    configure_package_config_file(
+        cmake/natsjwtConfig.cmake.in
+        ${CMAKE_CURRENT_BINARY_DIR}/natsjwtConfig.cmake
+        INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/natsjwt
+    )
+    write_basic_package_version_file(
+        ${CMAKE_CURRENT_BINARY_DIR}/natsjwtConfigVersion.cmake
+        VERSION ${PROJECT_VERSION}
+        COMPATIBILITY SameMajorVersion
+    )
+    install(FILES
+        ${CMAKE_CURRENT_BINARY_DIR}/natsjwtConfig.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/natsjwtConfigVersion.cmake
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/natsjwt
+    )
+
+    # pkg-config for non-CMake consumers
+    if (IS_ABSOLUTE "${CMAKE_INSTALL_LIBDIR}")
+        set(PKGCONFIG_LIBDIR "${CMAKE_INSTALL_LIBDIR}")
+    else()
+        set(PKGCONFIG_LIBDIR "\${prefix}/${CMAKE_INSTALL_LIBDIR}")
+    endif()
+    if (IS_ABSOLUTE "${CMAKE_INSTALL_INCLUDEDIR}")
+        set(PKGCONFIG_INCLUDEDIR "${CMAKE_INSTALL_INCLUDEDIR}")
+    else()
+        set(PKGCONFIG_INCLUDEDIR "\${prefix}/${CMAKE_INSTALL_INCLUDEDIR}")
+    endif()
+    configure_file(cmake/natsjwt.pc.in ${CMAKE_CURRENT_BINARY_DIR}/natsjwt.pc @ONLY)
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/natsjwt.pc
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
+    )
+
+    if (JWT_BUILD_CLI)
+        install(TARGETS jwt++
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        )
+    endif()
+endif()

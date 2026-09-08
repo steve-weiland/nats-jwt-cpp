@@ -103,11 +103,43 @@ jwt++ --verify token.jwt
 jwt++ --generate-creds --inkey user.seed user.jwt
 ```
 
+## Using the Library
+
+**CMake (`find_package`)** — install [nkeys-cpp](https://github.com/steve-weiland/nkeys-cpp)
+first (exporting requires it), then this library, then:
+
+```cmake
+find_package(natsjwt 1.0 CONFIG REQUIRED)
+
+target_link_libraries(my_app PRIVATE natsjwt::jwt)
+# add nkeys::nkeys too if you call nkeys APIs directly (key generation)
+```
+
+**Embedding (`add_subdirectory` / `FetchContent`)** — no install needed;
+nkeys-cpp is fetched automatically, and tests/CLI/install rules stay out of
+your build:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(natsjwt
+    GIT_REPOSITORY https://github.com/steve-weiland/nats-jwt-cpp.git
+    GIT_TAG v1.0.0)
+FetchContent_MakeAvailable(natsjwt)
+
+target_link_libraries(my_app PRIVATE natsjwt::jwt)
+```
+
+**pkg-config** — `c++ -std=c++20 app.cpp $(pkg-config --cflags --libs natsjwt)`.
+
+All consumption paths (find_package static + shared, pkg-config,
+add_subdirectory embed) are exercised by `tests/packaging/test.sh` in CI —
+the installed library is `libnatsjwt`, not a collision-prone `libjwt`.
+
 ## Requirements
 
 - **Compiler**: C++20 (GCC 10+, Clang 12+, MSVC 19.29+)
 - **CMake**: 3.21+
-- **Dependencies**: Auto-fetched (nkeys-cpp, nlohmann/json, GoogleTest)
+- **Dependencies**: Auto-fetched when not installed (nkeys-cpp pinned to a tag, nlohmann/json, GoogleTest); a system nkeys-cpp is preferred and required for `cmake --install`
 
 ## License
 

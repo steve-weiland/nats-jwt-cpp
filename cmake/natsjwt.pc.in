@@ -1,0 +1,12 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=@PKGCONFIG_LIBDIR@
+includedir=@PKGCONFIG_INCLUDEDIR@
+
+Name: natsjwt
+Description: C++20 port of the NATS JWT library (Ed25519 auth tokens)
+URL: https://github.com/steve-weiland/nats-jwt-cpp
+Version: @PROJECT_VERSION@
+Requires: nkeys
+Libs: -L${libdir} -lnatsjwt
+Cflags: -I${includedir}

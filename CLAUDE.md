@@ -109,11 +109,14 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
 
 Scope cuts are documented in the README (permissions/limits, imports/exports,
 activations, scoped signing keys, aud/tags, v1 reading, creds parsing).
-Usability items open: CMake package config + pkg-config + packaging gate
-(blocked on the naming decision — `nats-jwt-cpp`/`find_package(jwt)` collides with
-thalhammer/jwt-cpp), `BUILD_SHARED_LIBS`. nkeys-cpp's symbol-collision
-handling does NOT apply here (nothing vendored except the SHA-512/256 core,
-which is internal).
+The library is consumable four ways (find_package(natsjwt) static/shared,
+pkg-config, add_subdirectory embed — all gated by `tests/packaging/test.sh`,
+which installs a real nkeys-cpp and thereby also exercises the system-nkeys
+build path). Installing requires a system nkeys-cpp (a FetchContent-built one
+cannot be exported); building does not. nkeys-cpp's symbol-collision handling
+does NOT apply here (nothing vendored except the internal SHA-512/256 core),
+but the installed library is deliberately `libnatsjwt`, and the package
+`natsjwt` — plain `jwt` names collide with thalhammer/jwt-cpp.
 
 ## When review catches you violating a convention
 
