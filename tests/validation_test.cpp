@@ -297,8 +297,11 @@ TEST(ValidationTest, ValidateWithInvalidSignature) {
 
     std::string jwt = claims.encode(kp->seedString());
 
-    // Corrupt the JWT
-    jwt[jwt.length() - 5] = 'X';
+    // Corrupt the JWT — SWAP to a guaranteed-different base64url char: a
+    // fixed `= 'X'` was a no-op whenever the random signature already had an
+    // 'X' there (a 1-in-64 CI flake, measured on run 34292229920).
+    auto& c = jwt[jwt.length() - 5];
+    c = (c == 'X') ? 'Y' : 'X';
 
     jwt::ValidationOptions opts;
     opts.checkSignature = true;

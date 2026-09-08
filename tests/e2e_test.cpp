@@ -406,9 +406,12 @@ TEST_F(E2ETest, CorruptedJWTDetected) {
     // Save to file
     writeFile(temp_dir / "valid.jwt", jwt_string);
 
-    // Corrupt JWT in middle of signature
+    // Corrupt JWT in middle of signature — swap to a guaranteed-different
+    // char (a fixed = 'X' is a no-op 1 time in 64; same flake as
+    // ValidationTest.ValidateWithInvalidSignature, fixed together)
     size_t second_dot = jwt_string.rfind('.');
-    jwt_string[second_dot + 40] = 'X';
+    auto& sig_c = jwt_string[second_dot + 40];
+    sig_c = (sig_c == 'X') ? 'Y' : 'X';
     writeFile(temp_dir / "corrupted.jwt", jwt_string);
 
     // Corrupted should not verify

@@ -130,6 +130,30 @@ does NOT apply here (nothing vendored except the internal SHA-512/256 core),
 but the installed library is deliberately `libnatsjwt`, and the package
 `natsjwt` — plain `jwt` names collide with thalhammer/jwt-cpp.
 
+## Release ritual
+
+The tag's tree must report the version it claims — tag v1.1.0 once shipped a
+tree saying 1.0.0 because the tag came first. The order is: version-set
+commit → tag → bump commit, always:
+
+```bash
+# 1. set the release version (single source of truth: package config,
+#    natsjwt.pc, jwt++ --version all derive from it)
+#    edit CMakeLists.txt: project(nats-jwt-cpp VERSION X.Y.0 LANGUAGES CXX)
+git commit -am "Set version to X.Y.0"
+
+# 2. tag THAT commit
+git tag -a vX.Y.0 -m "vX.Y.0 — <summary>"
+
+# 3. bump for the next cycle
+#    edit CMakeLists.txt: project(nats-jwt-cpp VERSION X.(Y+1).0 LANGUAGES CXX)
+git commit -am "Bump version to X.(Y+1).0 for the next change"
+
+git push origin main vX.Y.0
+# verify before announcing:
+git show vX.Y.0:CMakeLists.txt | grep "^project("
+```
+
 ## When review catches you violating a convention
 
 Fix the code, then encode the violated rule into this file so the class of
