@@ -37,8 +37,8 @@ JwtParts parseJwt(std::string_view jwt);
 /// @param issuer_public_key Public key string (e.g., "OABC..." or "AABC...")
 /// @param signing_input The "header.payload" string that was signed
 /// @param signature_b64 Base64 URL encoded signature
-/// @return true if signature is valid, false otherwise
-/// @throws std::invalid_argument if inputs are malformed
+/// @return true if signature is valid, false otherwise (malformed inputs
+///         are false, never a throw)
 bool verifySignature(const std::string& issuer_public_key,
                      const std::string& signing_input,
                      const std::string& signature_b64);

@@ -89,35 +89,20 @@ JwtParts parseJwt(std::string_view jwt) {
 bool verifySignature(const std::string& issuer_public_key,
                      const std::string& signing_input,
                      const std::string& signature_b64) {
+    // Answers "does this verify?" — malformed input is just "no", never a
+    // throw (the old version threw and its caller caught `...`, exceptions
+    // as control flow). Callers who need an error translate false themselves.
     try {
-        // Decode the Base64 URL signature
         std::vector<std::uint8_t> signature_bytes = base64url_decode(signature_b64);
-
-        // Ed25519 signatures must be exactly 64 bytes
-        if (signature_bytes.size() != 64) {
-            throw std::invalid_argument(
-                "Invalid signature size: expected 64 bytes, got " +
-                std::to_string(signature_bytes.size())
-            );
-        }
-
-        // Create public key from the issuer's public key string
         auto public_key = nkeys::FromPublicKey(issuer_public_key);
-
-        // Convert signing input to byte span
         std::span<const std::uint8_t> signing_bytes(
             reinterpret_cast<const std::uint8_t*>(signing_input.data()),
             signing_input.size()
         );
-
-        // Verify the signature (Ed25519 verification)
+        // nkeys verify() is noexcept and length-checks the signature itself
         return public_key->verify(signing_bytes, signature_bytes);
-
-    } catch (const std::exception& e) {
-        // Any error during verification means invalid signature
-        throw std::invalid_argument(
-            std::string("Signature verification failed: ") + e.what()
-        );
+    } catch (...) {
+        return false;
     }
 }
 
