@@ -3,6 +3,7 @@
 #include <nkeys/nkeys.hpp>
 #include <nlohmann/json.hpp>
 #include "../src/base64url.hpp"
+#include "../src/jwt_utils.hpp"
 #include <fstream>
 #include <sstream>
 #include <cstdio>
@@ -637,4 +638,63 @@ TEST(DecodeAuthTest, OversizedTokenRejected) {
 
 TEST(DecodeAuthTest, MaxSizeMatchesGo) {
     EXPECT_EQ(jwt::MAX_JWT_SIZE, 1024u * 1024u) << "Go's MaxTokenSize is 1MB";
+}
+
+
+// ============================================================================
+// jti as deterministic content hash (fix #8) — Go computes the claim ID as
+// SHA-512/256 over the claims JSON serialized with jti absent, base32-encoded
+// without padding. Random hex lost the content-derived property (dedup,
+// audit); the hash is over OUR serialization (field order differs from Go's),
+// so values differ across libraries by design — the ALGORITHM is what's
+// ported. Golden below cross-checked against Python hashlib sha512_256.
+// ============================================================================
+
+TEST(JtiTest, ComputeJtiMatchesIndependentImplementation) {
+    const std::string payload =
+        R"({"iat":1700000000,"iss":"OTEST","sub":"OTEST","nats":{"type":"operator","version":2}})";
+    EXPECT_EQ(jwt::internal::computeJti(payload),
+              "LO5EK7HX57LMUUMGQ3OGKGPPPFDT2OM774DHUQ723EAXEILCW6QQ");
+}
+
+namespace {
+    std::string jtiOf(const std::string& token) {
+        auto first = token.find('.');
+        auto second = token.find('.', first + 1);
+        auto bytes = jwt::internal::base64url_decode(
+            token.substr(first + 1, second - first - 1));
+        auto payload = nlohmann::json::parse(std::string(bytes.begin(), bytes.end()));
+        return payload.at("jti").get<std::string>();
+    }
+}
+
+TEST(JtiTest, JtiIsContentDerivedBase32) {
+    auto okp = nkeys::CreateOperator();
+    jwt::OperatorClaims claims(okp->publicString());
+    claims.setName("alpha");
+    auto jti = jtiOf(claims.encode(okp->seedString()));
+
+    // SHA-512/256 → 32 bytes → 52 base32 chars, no padding (Go's shape)
+    EXPECT_EQ(jti.size(), 52u);
+    for (char c : jti) {
+        EXPECT_TRUE((c >= 'A' && c <= 'Z') || (c >= '2' && c <= '7')) << c;
+    }
+
+    // Same content + same second → same jti (deterministic); different
+    // content → different jti. Both tokens carry iat stamped in the same
+    // call sequence — retry once if the second ticked over between encodes.
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        jwt::OperatorClaims a(okp->publicString());
+        a.setName("alpha");
+        jwt::OperatorClaims b(okp->publicString());
+        b.setName("beta");
+        auto ja1 = claims.encode(okp->seedString());
+        auto ja2 = a.encode(okp->seedString());
+        auto jb = b.encode(okp->seedString());
+        if (jtiOf(ja1) != jtiOf(ja2)) continue;  // second boundary hit
+        EXPECT_EQ(jtiOf(ja1), jtiOf(ja2));
+        EXPECT_NE(jtiOf(ja1), jtiOf(jb));
+        return;
+    }
+    FAIL() << "could not encode twice within one second across 3 attempts";
 }

@@ -1,15 +1,20 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <cstdint>
 #include <vector>
 #include <span>
 
 namespace jwt::internal {
 
-/// Generate a random JWT ID (32 hex chars from 16 random bytes)
-/// @return 32-character hex string
-std::string generateJti();
+/// Compute the claim ID the way Go's jwt does: SHA-512/256 over the claims
+/// JSON serialized WITHOUT the jti field, base32-encoded without padding
+/// (52 chars). Deterministic and content-derived; each library hashes its own
+/// serialization, so values differ from Go's for the same logical claims.
+/// @param payloadJsonWithoutJti the payload JSON, jti absent
+/// @return 52-character base32 string
+std::string computeJti(std::string_view payloadJsonWithoutJti);
 
 /// Get current Unix timestamp in seconds
 /// @return Unix timestamp (seconds since epoch)

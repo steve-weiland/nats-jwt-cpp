@@ -58,12 +58,11 @@ std::string UserClaims::encode(const std::string& seed) const {
 
     validate();
 
-    std::string jti = generateJti();
     std::int64_t iat = impl_->issuedAt_;
 
-    // Build payload JSON
+    // Build payload JSON — jti is computed OVER this serialization with the
+    // jti field absent (Go: c.ID="" then hash), then inserted.
     json payload = {
-        {"jti", jti},
         {"iat", iat},
         {"iss", impl_->issuer_},
         {"sub", impl_->subject_}
@@ -85,6 +84,8 @@ std::string UserClaims::encode(const std::string& seed) const {
         nats_claims["issuer_account"] = *impl_->issuerAccount_;
     }
     payload["nats"] = nats_claims;
+
+    payload["jti"] = computeJti(payload.dump());
 
     // Create JWT: header.payload.signature
     std::string header_json = createHeader();
