@@ -29,11 +29,12 @@ whole Go surface. Ported: the three claim types with name/expiry/signing-keys/
 issuer_account, **user permissions (pub/sub allow/deny, response permissions)
 and limits (subs/data/payload, src CIDRs, time windows)** — enforced against a
 real nats-server in CI — encode/decode/verify, timing + chain validation,
-creds generation. Un-ported fields survive decode→re-encode untouched. NOT
-ported (by choice): account limits/imports/exports beyond the defaults,
-activation claims, scoped signing keys, bearer/connection-type flags,
-audience/tags, v1 token reading, creds parsing (nkeys-cpp provides
-`ParseDecoratedJWT`/`ParseDecoratedUserNKey`).
+creds generation AND parsing (`parseDecoratedJWT`/`parseDecoratedNKey`/
+`parseDecoratedUserNKey`, plus `decorateJWT`/`decorateSeed`, byte-identical to
+Go). Un-ported fields survive decode→re-encode untouched. NOT ported (by
+choice): account limits/imports/exports beyond the defaults, activation
+claims, scoped signing keys, bearer/connection-type flags, audience/tags,
+v1 token reading.
 
 ## Quick Start
 

@@ -856,3 +856,71 @@ TEST(ServerUsableClaimsTest, ReEncodePreservesUnportedNatsFields) {
         << "un-ported field lost on re-encode";
     EXPECT_EQ(nats.at("type"), "account");
 }
+
+// ============================================================================
+// Creds parsing + decorating (fix-plan "not-ported" #13) — the parse trio
+// delegates to nkeys-cpp (whose behavior was itself measured against Go);
+// decorateJWT/decorateSeed are new, gated byte-for-byte on live Go output.
+// ============================================================================
+
+namespace {
+    std::string fixtureBytes(const std::string& name) {
+        std::ifstream f(std::string(JWT_TEST_FIXTURES_DIR "/") + name, std::ios::binary);
+        EXPECT_TRUE(f.is_open()) << "fixture " << name;
+        return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
+    }
+    std::string fixtureLine(const std::string& name) {
+        auto s = fixtureBytes(name);
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+        return s;
+    }
+}
+
+TEST(CredsTest, ParseDecoratedJWTFromGoCreds) {
+    EXPECT_EQ(jwt::parseDecoratedJWT(fixtureBytes("user.creds")),
+              fixtureLine("user.jwt"));
+    // bare JWT content passes through unmodified
+    EXPECT_EQ(jwt::parseDecoratedJWT(fixtureLine("user.jwt")),
+              fixtureLine("user.jwt"));
+}
+
+TEST(CredsTest, ParseDecoratedNKeysFromGoCreds) {
+    auto creds = fixtureBytes("user.creds");
+    auto kp = jwt::parseDecoratedNKey(creds);
+    EXPECT_EQ(kp->seedString(), fixtureLine("user.seed"));
+    auto ukp = jwt::parseDecoratedUserNKey(creds);
+    auto user = jwt::decodeUserClaims(fixtureLine("user.jwt"));
+    EXPECT_EQ(ukp->publicString(), user->subject());
+}
+
+TEST(CredsTest, DecorateJWTMatchesGoByteForByte) {
+    EXPECT_EQ(jwt::decorateJWT(fixtureLine("user.jwt")),
+              fixtureBytes("user.jwt.decorated"));
+    // account JWTs armor with their own kind
+    EXPECT_EQ(jwt::decorateJWT(fixtureLine("account.jwt")),
+              fixtureBytes("account.jwt.decorated"));
+}
+
+TEST(CredsTest, DecorateSeedMatchesGoByteForByte) {
+    EXPECT_EQ(jwt::decorateSeed(fixtureLine("user.seed")),
+              fixtureBytes("user.seed.decorated"));
+}
+
+TEST(CredsTest, DecorateJWTIsAuthenticated) {
+    // Go's DecorateJWT decodes first — junk and tampered tokens are refused.
+    EXPECT_THROW((void)jwt::decorateJWT("not-a-jwt"), jwt::Error);
+    auto tampered = tamperName(
+        [] {
+            auto okp = nkeys::CreateOperator();
+            jwt::OperatorClaims oc(okp->publicString());
+            oc.setName("op");
+            return oc.encode(okp->seedString());
+        }(),
+        "evil");
+    EXPECT_THROW((void)jwt::decorateJWT(tampered), jwt::SignatureError);
+}
+
+TEST(CredsTest, DecorateSeedRejectsNonSigningSeeds) {
+    EXPECT_THROW((void)jwt::decorateSeed("SXNOTASIGNINGSEED"), jwt::InvalidClaimsError);
+    EXPECT_THROW((void)jwt::decorateSeed("S"), jwt::InvalidClaimsError);
+}

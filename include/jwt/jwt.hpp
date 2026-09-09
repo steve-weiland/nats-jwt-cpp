@@ -8,5 +8,6 @@
 #include "jwt/account_claims.hpp"
 #include "jwt/user_claims.hpp"
 #include "jwt/validation.hpp"
+#include "jwt/creds.hpp"
 
 namespace jwt {}
