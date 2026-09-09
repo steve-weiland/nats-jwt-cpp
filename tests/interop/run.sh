@@ -6,7 +6,8 @@
 #   usage: tests/interop/run.sh <cmake-build-dir>
 #
 # Eight checks:
-#   1. C++-minted operator/account/user JWTs pass Go's authenticated Decode
+#   1. C++-minted operator/account/user JWTs pass Go's authenticated Decode —
+#      minted both from seeds and through encodeWithSigner (external signer)
 #   2. C++-generated .creds parses via Go ParseDecoratedJWT (the armor regex
 #      every NATS client uses) and its JWT decodes
 #   3. Go's canonical artifacts decode in C++ — including the SELF-SIGNED
@@ -47,7 +48,13 @@ mkdir -p "$TMP/cpp"
 for f in op acc user; do
     "$GO" decode "$TMP/cpp/$f.jwt" >/dev/null || fail "Go rejected C++-minted $f.jwt"
 done
-check "C++-minted operator/account/user pass Go's authenticated Decode"
+mkdir -p "$TMP/cpp-signer"
+"$CPP" encode-signer "$TMP/cpp-signer" >/dev/null
+for f in op acc user; do
+    "$GO" decode "$TMP/cpp-signer/$f.jwt" >/dev/null || fail "Go rejected C++ signer-minted $f.jwt"
+done
+"$GO" creds "$TMP/cpp-signer/u.creds" >/dev/null || fail "Go could not parse signer-minted creds"
+check "C++-minted operator/account/user pass Go's authenticated Decode (seed AND external-signer paths)"
 
 # 2 ── C++ creds through the armor regex real clients use
 "$GO" creds "$TMP/cpp/u.creds" >/dev/null || fail "Go could not parse C++-generated creds"

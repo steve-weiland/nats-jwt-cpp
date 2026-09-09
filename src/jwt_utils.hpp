@@ -5,8 +5,22 @@
 #include <cstdint>
 #include <vector>
 #include <span>
+#include "jwt/claims.hpp"
+#include <nkeys/nkeys.hpp>
 
 namespace jwt::internal {
+
+/// A SignFn over an in-process keypair (the encode(seed) path). The keypair
+/// must outlive the returned function.
+SignFn signerFor(const nkeys::KeyPair& kp);
+
+/// Finish an encode (Go's doEncode tail): base64url the header and payload,
+/// hand "header.payload" to the signer, VERIFY the returned signature against
+/// issuerPublicKey (throws SignatureError on mismatch or bad length), and
+/// assemble header.payload.signature.
+std::string signAndAssemble(const std::string& payloadJson,
+                            const std::string& issuerPublicKey,
+                            const SignFn& sign);
 
 /// Compute the claim ID the way Go's jwt does: SHA-512/256 over the claims
 /// JSON serialized WITHOUT the jti field, base32-encoded without padding

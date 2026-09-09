@@ -4,6 +4,8 @@
 //   verify <file>             signature check via the embedded issuer
 //   chain <op> <acc> <user>   strict() chain validation
 //   encode <dir>              writes op/acc/user.jwt + u.creds (direct issuance)
+//   encode-signer <dir>       the same files minted through encodeWithSigner —
+//                             an external-signer callback holds the keys
 //   richuser <dir>            user token exercising the full typed
 //                             permissions/limits surface (fix-plan #1+#2)
 //   bootstrap <dir>           the Go README flow, verbatim: operator with a
@@ -229,19 +231,28 @@ int main([[maybe_unused]] int argc, char** argv) try {
         uc.allowedConnectionTypes() = {jwt::ConnectionType::Websocket, jwt::ConnectionType::Mqtt};
         std::ofstream(dir + "/rich-user.jwt") << uc.encode(akp->seedString());
         std::cout << "OK\n";
-    } else if (mode == "encode") { // dir → write op/acc/user jwts + creds, README-style (direct issuance)
+    } else if (mode == "encode" || mode == "encode-signer") {
+        // dir → write op/acc/user jwts + creds, README-style (direct issuance);
+        // encode-signer mints the same through encodeWithSigner, the keys held
+        // by a callback standing in for an HSM
         std::string dir = argv[2];
+        const bool viaSigner = mode == "encode-signer";
+        auto mint = [&](const jwt::Claims& c, const nkeys::KeyPair& kp) {
+            if (!viaSigner) return c.encode(kp.seedString());
+            return c.encodeWithSigner(kp.publicString(),
+                [&kp](std::string_view, std::span<const std::uint8_t> d) { return kp.sign(d); });
+        };
         auto okp = nkeys::CreateOperator();
         jwt::OperatorClaims oc(okp->publicString());
         oc.setName("O");
-        std::string opJwt = oc.encode(okp->seedString());
+        std::string opJwt = mint(oc, *okp);
         auto akp = nkeys::CreateAccount();
         jwt::AccountClaims ac(akp->publicString());
         ac.setName("A");
-        std::string accJwt = ac.encode(okp->seedString());
+        std::string accJwt = mint(ac, *okp);
         auto ukp = nkeys::CreateUser();
         jwt::UserClaims u(ukp->publicString());
-        std::string userJwt = u.encode(akp->seedString());
+        std::string userJwt = mint(u, *akp);
         std::string creds = jwt::formatUserConfig(userJwt, ukp->seedString());
         for (auto& [n, c] : std::vector<std::pair<std::string,std::string>>{
                 {"op.jwt", opJwt}, {"acc.jwt", accJwt}, {"user.jwt", userJwt}, {"u.creds", creds}})

@@ -414,14 +414,20 @@ void AccountClaims::setInfoURL(const std::string& url) { impl_->infoURL_ = url; 
 std::string AccountClaims::infoURL() const { return impl_->infoURL_; }
 
 std::string AccountClaims::encode(const std::string& seed) const {
+    // the seed path is the signer path with an in-process keypair
+    auto keypair = nkeys::FromSeed(seed);
+    return encodeWithSigner(keypair->publicString(), internal::signerFor(*keypair));
+}
+
+std::string AccountClaims::encodeWithSigner(const std::string& issuerPublicKey,
+                                            const SignFn& sign) const {
     using namespace internal;
     using json = nlohmann::json;
 
     // Go's doEncode: the issuer IS the signing key — derived, never taken on
     // trust from a setter (iss can then never disagree with the signature) —
     // and iat is stamped fresh at every encode.
-    auto keypair = nkeys::FromSeed(seed);
-    impl_->issuer_ = keypair->publicString();
+    impl_->issuer_ = issuerPublicKey;
     if (!nkeys::IsValidPublicOperatorKey(impl_->issuer_) &&
         !nkeys::IsValidPublicAccountKey(impl_->issuer_)) {
         throw InvalidClaimsError("Account JWTs must be signed by an operator or account key");
@@ -517,34 +523,8 @@ std::string AccountClaims::encode(const std::string& seed) const {
 
     payload["jti"] = computeJti(payload.dump());
 
-    // Create JWT: header.payload.signature
-    std::string header_json = createHeader();
-    std::string payload_json = payload.dump();
-
-    // Convert strings to byte spans for encoding
-    std::span<const std::uint8_t> header_bytes(
-        reinterpret_cast<const std::uint8_t*>(header_json.data()),
-        header_json.size()
-    );
-    std::span<const std::uint8_t> payload_bytes(
-        reinterpret_cast<const std::uint8_t*>(payload_json.data()),
-        payload_json.size()
-    );
-
-    std::string header_b64 = base64url_encode(header_bytes);
-    std::string payload_b64 = base64url_encode(payload_bytes);
-
-    // Sign "header.payload"
-    std::string signing_input = header_b64 + "." + payload_b64;
-    std::span<const std::uint8_t> signing_bytes(
-        reinterpret_cast<const std::uint8_t*>(signing_input.data()),
-        signing_input.size()
-    );
-
-    auto signature_bytes = keypair->sign(signing_bytes);
-    std::string signature_b64 = base64url_encode(signature_bytes);
-
-    return signing_input + "." + signature_b64;
+    // Go's doEncode tail: header.payload → signer → (verified) signature
+    return signAndAssemble(payload.dump(), issuerPublicKey, sign);
 }
 
 void AccountClaims::validate() const {

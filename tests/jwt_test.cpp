@@ -930,3 +930,131 @@ TEST(CredsTest, DecorateSeedRejectsNonSigningSeeds) {
     EXPECT_THROW((void)jwt::decorateSeed("SXNOTASIGNINGSEED"), jwt::InvalidClaimsError);
     EXPECT_THROW((void)jwt::decorateSeed("S"), jwt::InvalidClaimsError);
 }
+
+// ============================================================================
+// External signer — encodeWithSigner (fix-plan group 5b). Go's
+// EncodeWithSigner(kp, fn): kp contributes ONLY its public key (issuer +
+// ExpectedPrefixes), fn signs the "header.payload" bytes — the private key
+// never enters this process (HSM/KMS custody). Divergence, deliberate: the
+// callback's signature is VERIFIED against the advertised key before the
+// token is emitted; Go emits whatever fn returns.
+// ============================================================================
+
+namespace {
+    struct SignerCase {
+        const char* name;
+        std::function<std::unique_ptr<nkeys::KeyPair>()> makeSigner;  // right key type for the claim
+        std::function<std::unique_ptr<jwt::Claims>()> makeClaims;
+    };
+    std::vector<SignerCase> signerCases() {
+        return {
+            {"operator", [] { return nkeys::CreateOperator(); },
+             [] { return std::unique_ptr<jwt::Claims>(
+                      new jwt::OperatorClaims(nkeys::CreateOperator()->publicString())); }},
+            {"account", [] { return nkeys::CreateOperator(); },
+             [] { return std::unique_ptr<jwt::Claims>(
+                      new jwt::AccountClaims(nkeys::CreateAccount()->publicString())); }},
+            {"user", [] { return nkeys::CreateAccount(); },
+             [] { return std::unique_ptr<jwt::Claims>(
+                      new jwt::UserClaims(nkeys::CreateUser()->publicString())); }},
+            {"activation", [] { return nkeys::CreateAccount(); },
+             [] {
+                 auto a = std::make_unique<jwt::ActivationClaims>(nkeys::CreateAccount()->publicString());
+                 a->setImportSubject("billing.charge");
+                 a->setImportType(jwt::ExportType::Service);
+                 return std::unique_ptr<jwt::Claims>(a.release());
+             }},
+        };
+    }
+    nlohmann::json payloadOf(const std::string& token) {
+        auto p = jwt::internal::parseJwt(token);
+        auto bytes = jwt::internal::base64url_decode(p.payload_b64);
+        return nlohmann::json::parse(std::string(bytes.begin(), bytes.end()));
+    }
+    // the "HSM": owns the keypair; the caller only ever sees the public key
+    jwt::SignFn hsm(const nkeys::KeyPair& kp) {
+        return [&kp](std::string_view, std::span<const std::uint8_t> data) { return kp.sign(data); };
+    }
+}
+
+TEST(ExternalSignerTest, CallbackTokenEqualsSeedPathAndDecodes) {
+    for (const auto& c : signerCases()) {
+        SCOPED_TRACE(c.name);
+        auto kp = c.makeSigner();
+        auto claims = c.makeClaims();
+        auto viaSeed = claims->encode(kp->seedString());
+        auto viaSigner = claims->encodeWithSigner(kp->publicString(), hsm(*kp));
+        EXPECT_TRUE(jwt::verify(viaSigner));
+        auto decoded = jwt::decode(viaSigner);  // authenticated
+        EXPECT_EQ(decoded->issuer(), kp->publicString());
+        // same claims → same payload, modulo the fresh iat (and jti over it)
+        auto a = payloadOf(viaSeed), b = payloadOf(viaSigner);
+        EXPECT_LE(std::abs(a.at("iat").get<std::int64_t>() - b.at("iat").get<std::int64_t>()), 1);
+        for (auto* k : {"iat", "jti"}) { a.erase(k); b.erase(k); }
+        EXPECT_EQ(a, b);
+    }
+}
+
+TEST(ExternalSignerTest, CallbackReceivesAdvertisedKeyAndTheSigningInput) {
+    auto akp = nkeys::CreateAccount();
+    jwt::UserClaims uc(nkeys::CreateUser()->publicString());
+    std::string seenKey;
+    std::string seenInput;
+    auto token = uc.encodeWithSigner(akp->publicString(),
+        [&](std::string_view pub, std::span<const std::uint8_t> data) {
+            seenKey = std::string(pub);
+            seenInput.assign(reinterpret_cast<const char*>(data.data()), data.size());
+            return akp->sign(data);
+        });
+    EXPECT_EQ(seenKey, akp->publicString());
+    EXPECT_EQ(seenInput, jwt::internal::parseJwt(token).signing_input);
+}
+
+TEST(ExternalSignerTest, SignatureFromTheWrongKeyIsRefused) {
+    // an HSM handed the wrong key handle: the token would name akp as issuer
+    // but carry another key's signature — unverifiable by every decoder.
+    // Go would emit it; we refuse (the class of bug fix-plan #5 killed).
+    auto akp = nkeys::CreateAccount();
+    auto other = nkeys::CreateAccount();
+    for (const auto& c : signerCases()) {
+        SCOPED_TRACE(c.name);
+        auto kp = c.makeSigner();
+        auto wrong = c.makeSigner();
+        auto claims = c.makeClaims();
+        EXPECT_THROW((void)claims->encodeWithSigner(kp->publicString(), hsm(*wrong)),
+                     jwt::SignatureError);
+    }
+    jwt::UserClaims uc(nkeys::CreateUser()->publicString());
+    // malformed lengths are refused too
+    EXPECT_THROW((void)uc.encodeWithSigner(akp->publicString(),
+                     [](std::string_view, std::span<const std::uint8_t>) {
+                         return std::vector<std::uint8_t>(10, 0xAB); }),
+                 jwt::SignatureError);
+    EXPECT_THROW((void)uc.encodeWithSigner(akp->publicString(),
+                     [](std::string_view, std::span<const std::uint8_t>) {
+                         return std::vector<std::uint8_t>{}; }),
+                 jwt::SignatureError);
+}
+
+TEST(ExternalSignerTest, PrefixRulesApplyToTheAdvertisedKeyBeforeSigning) {
+    // Go's ExpectedPrefixes run on kp's public key; the callback is never
+    // reached for a disallowed issuer type (or a garbage key)
+    auto okp = nkeys::CreateOperator();
+    bool called = false;
+    auto counting = [&](std::string_view, std::span<const std::uint8_t> d) { called = true; return okp->sign(d); };
+    jwt::UserClaims uc(nkeys::CreateUser()->publicString());
+    EXPECT_THROW((void)uc.encodeWithSigner(okp->publicString(), counting), jwt::InvalidClaimsError);
+    EXPECT_THROW((void)uc.encodeWithSigner("not-a-key", counting), jwt::InvalidClaimsError);
+    EXPECT_FALSE(called);
+}
+
+TEST(ExternalSignerTest, SignerExceptionsPropagateUnwrapped) {
+    // the callback's failure is the caller's error (Go returns fn's err as-is)
+    struct HsmDown : std::runtime_error { using std::runtime_error::runtime_error; };
+    auto akp = nkeys::CreateAccount();
+    jwt::UserClaims uc(nkeys::CreateUser()->publicString());
+    EXPECT_THROW((void)uc.encodeWithSigner(akp->publicString(),
+                     [](std::string_view, std::span<const std::uint8_t>) -> std::vector<std::uint8_t> {
+                         throw HsmDown("hsm unreachable"); }),
+                 HsmDown);
+}

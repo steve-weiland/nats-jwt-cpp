@@ -60,13 +60,19 @@ std::optional<std::string> ActivationClaims::issuerAccount() const {
 }
 
 std::string ActivationClaims::encode(const std::string& seed) const {
+    // the seed path is the signer path with an in-process keypair
+    auto keypair = nkeys::FromSeed(seed);
+    return encodeWithSigner(keypair->publicString(), internal::signerFor(*keypair));
+}
+
+std::string ActivationClaims::encodeWithSigner(const std::string& issuerPublicKey,
+                                               const SignFn& sign) const {
     using namespace internal;
     using json = nlohmann::json;
 
     // Go's doEncode: issuer derived from the seed; activations may be issued
     // by accounts or operators (ExpectedPrefixes).
-    auto keypair = nkeys::FromSeed(seed);
-    impl_->issuer_ = keypair->publicString();
+    impl_->issuer_ = issuerPublicKey;
     if (!nkeys::IsValidPublicAccountKey(impl_->issuer_) &&
         !nkeys::IsValidPublicOperatorKey(impl_->issuer_)) {
         throw InvalidClaimsError("Activation JWTs must be signed by an account or operator key");
@@ -94,17 +100,8 @@ std::string ActivationClaims::encode(const std::string& seed) const {
 
     payload["jti"] = computeJti(payload.dump());
 
-    std::string header_json = createHeader();
-    std::string payload_json = payload.dump();
-    std::span<const std::uint8_t> header_bytes(
-        reinterpret_cast<const std::uint8_t*>(header_json.data()), header_json.size());
-    std::span<const std::uint8_t> payload_bytes(
-        reinterpret_cast<const std::uint8_t*>(payload_json.data()), payload_json.size());
-    std::string signing_input =
-        base64url_encode(header_bytes) + "." + base64url_encode(payload_bytes);
-    std::span<const std::uint8_t> signing_bytes(
-        reinterpret_cast<const std::uint8_t*>(signing_input.data()), signing_input.size());
-    return signing_input + "." + base64url_encode(keypair->sign(signing_bytes));
+    // Go's doEncode tail: header.payload → signer → (verified) signature
+    return signAndAssemble(payload.dump(), issuerPublicKey, sign);
 }
 
 void ActivationClaims::validate() const {

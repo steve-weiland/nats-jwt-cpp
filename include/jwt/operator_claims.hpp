@@ -19,6 +19,8 @@ public:
     [[nodiscard]] std::int64_t issuedAt() const override;
     [[nodiscard]] std::int64_t expires() const override;
     [[nodiscard]] std::string encode(const std::string& seed) const override;
+    [[nodiscard]] std::string encodeWithSigner(const std::string& issuerPublicKey,
+                                               const SignFn& sign) const override;
     void validate() const override;
 
     // Operator-specific

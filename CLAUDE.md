@@ -28,7 +28,11 @@ the Go implementation is the defining requirement and is continuously measured
 - **The issuer is derived, never trusted from a setter.** `encode(seed)` sets
   `iss` from the seed's public key (Go's doEncode) and enforces Go's
   ExpectedPrefixes (operator←operator, account←operator|account, user←account).
-  A token whose `iss` disagrees with its signature must be unmintable.
+  A token whose `iss` disagrees with its signature must be unmintable — which
+  is why `encodeWithSigner` (Go: EncodeWithSigner; the seed path is a wrapper
+  over it, `internal::signAndAssemble`) verifies the callback's signature
+  against the advertised key and throws SignatureError otherwise. Go trusts
+  the callback; we don't — a mis-keyed HSM is one config error away.
 - **Trust flows through the chain.** Signature verification proves the token
   was signed by the key it NAMES; `validateChain`/`validateIssuerChain`
   (subject ∪ signing keys, `issuer_account` must name the parent) establish
@@ -133,7 +137,9 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
 ## Known gaps
 
 Scope cuts are documented in the README (aud/tags, v1 reading,
-auth-callout, external signers, activation hashID). User permissions/limits ARE ported — real-server-enforced in CI
+auth-callout, activation hashID). External signers are ported
+(`encodeWithSigner`; the interop gate pushes signer-minted tokens through Go
+Decode). User permissions/limits ARE ported — real-server-enforced in CI
 (e2e check 3) — creds parse/decorate is ported (creds.hpp: parse trio
 delegates to nkeys-cpp; decorate is authenticated and byte-golden vs Go) —
 and scoped signing keys are ported (UserScope in a SORTED mixed signing_keys

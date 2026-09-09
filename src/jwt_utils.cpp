@@ -131,6 +131,34 @@ std::int64_t getCurrentTimestamp() {
     return duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
 }
 
+SignFn signerFor(const nkeys::KeyPair& kp) {
+    return [&kp](std::string_view, std::span<const std::uint8_t> data) { return kp.sign(data); };
+}
+
+std::string signAndAssemble(const std::string& payloadJson,
+                            const std::string& issuerPublicKey,
+                            const SignFn& sign) {
+    const std::string headerJson = createHeader();
+    const auto asBytes = [](const std::string& str) {
+        return std::span<const std::uint8_t>(
+            reinterpret_cast<const std::uint8_t*>(str.data()), str.size());
+    };
+    const std::string signingInput =
+        base64url_encode(asBytes(headerJson)) + "." + base64url_encode(asBytes(payloadJson));
+
+    const std::vector<std::uint8_t> signature = sign(issuerPublicKey, asBytes(signingInput));
+
+    // Never emit a token whose signature does not verify against the key it
+    // names — with an external signer the wrong key handle is one config
+    // error away, and the result would be rejected by every decoder.
+    auto pub = nkeys::FromPublicKey(issuerPublicKey);
+    if (!pub->verify(asBytes(signingInput), signature)) {
+        throw SignatureError("signer produced a signature that does not verify against " +
+                             issuerPublicKey);
+    }
+    return signingInput + "." + base64url_encode(signature);
+}
+
 std::string createHeader() {
     nlohmann::json header;
     header["typ"] = JWT_TYPE;

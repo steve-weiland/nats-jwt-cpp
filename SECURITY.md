@@ -50,6 +50,26 @@ If you discover a security vulnerability, please report it privately:
 - Constant-time comparison (via nkeys-cpp)
 - Key type validation (User JWT signed by Account key, etc.)
 
+### External Signers (HSM / KMS custody)
+
+`encodeWithSigner(issuerPublicKey, SignFn)` mirrors Go's `EncodeWithSigner`:
+the library never sees the private key. What it guarantees, and what it
+cannot:
+
+- **The issuer is still derived.** `issuerPublicKey` becomes `iss` and is
+  checked against the claim type's allowed issuer kinds BEFORE the signer is
+  called; the signer cannot change who the token claims to be from.
+- **The signature is verified before the token is emitted** (divergence from
+  Go, which emits whatever the callback returns). A callback wired to the
+  wrong key handle, or returning a malformed signature, throws
+  `jwt::SignatureError` instead of minting a token every decoder rejects.
+- **The signer sees exactly what is signed**: the `header.payload` bytes and
+  the public key it is expected to sign for — enough for a policy layer to
+  refuse signing tokens it does not like.
+- **Not covered:** the security of the signer itself. A compromised HSM
+  interface signs whatever it is asked to; the callback's own exceptions
+  propagate unwrapped so its failure modes stay visible.
+
 ### Memory Security
 
 **Sensitive Data Handling**

@@ -32,8 +32,12 @@ real nats-server in CI — encode/decode/verify, timing + chain validation,
 creds generation AND parsing (`parseDecoratedJWT`/`parseDecoratedNKey`/
 `parseDecoratedUserNKey`, plus `decorateJWT`/`decorateSeed`, byte-identical to
 Go). Un-ported fields survive decode→re-encode untouched. NOT ported (by
-choice): audience/tags, v1 token reading, auth-callout claims, external
-signers, activation hashID. User connection flags ARE ported (`bearer_token`,
+choice): audience/tags, v1 token reading, auth-callout claims, activation
+hashID. External signers ARE ported: `encodeWithSigner(issuerPublicKey,
+SignFn)` on every claim type (Go's EncodeWithSigner) — the private key stays
+in your HSM/KMS, and the returned signature is verified against the named
+issuer before a token is emitted (a deliberate divergence: Go emits whatever
+the callback returns). User connection flags ARE ported (`bearer_token`,
 `proxy_required`, `allowed_connection_types`, on users and inside scope
 templates): a WEBSOCKET-only user being refused over plain TCP is a real-
 server CI gate; bearer and proxy_required are Go-wire-gated only (the nats
@@ -100,6 +104,13 @@ auto result = jwt::validateChain(chain, jwt::ValidationOptions::strict());
 
 // Generate NATS credentials file
 std::string creds = jwt::formatUserConfig(user_jwt, user_kp->seedString());
+
+// Key custody elsewhere (HSM/KMS): sign through a callback — only the PUBLIC
+// key is passed in; it becomes `iss` and the signature is checked against it
+std::string hsm_signed = user_claims.encodeWithSigner(account_kp->publicString(),
+    [](std::string_view issuer_pub, std::span<const std::uint8_t> signing_input) {
+        return my_hsm.sign_ed25519(issuer_pub, signing_input);  // 64 bytes
+    });
 ```
 
 ### CLI Tool
