@@ -103,6 +103,47 @@ func main() {
 		}
 		fmt.Printf("subs=%d data=%d payload=%d\n", uc.Limits.Subs, uc.Limits.Data, uc.Limits.Payload)
 		fmt.Printf("src=%v times=%v locale=%s\n", uc.Limits.Src, uc.Limits.Times, uc.Limits.Locale)
+	case "genrichaccount": // dir → account with custom limits/JS/mappings/info + a tiered variant
+		dir := os.Args[2]
+		akp, _ := nkeys.CreateAccount()
+		apk, _ := akp.PublicKey()
+		ac := jwt.NewAccountClaims(apk)
+		ac.Name = "rich-account"
+		ac.Description = "tenant with quotas"
+		ac.InfoURL = "https://example.com/tenant"
+		ac.Limits.Subs = 500
+		ac.Limits.Data = 1 << 30
+		ac.Limits.Payload = 65536
+		ac.Limits.Imports = 4
+		ac.Limits.Exports = 2
+		ac.Limits.WildcardExports = false
+		ac.Limits.DisallowBearer = true
+		ac.Limits.Conn = 10
+		ac.Limits.LeafNodeConn = 2
+		ac.Limits.JetStreamLimits = jwt.JetStreamLimits{
+			MemoryStorage: 1 << 20, DiskStorage: 1 << 30, Streams: 10,
+			Consumer: 100, MaxAckPending: 1000, MemoryMaxStreamBytes: 1 << 19,
+			DiskMaxStreamBytes: 1 << 29, MaxBytesRequired: true,
+		}
+		ac.DefaultPermissions.Pub.Allow.Add("app.>")
+		ac.DefaultPermissions.Sub.Deny.Add("app.internal.>")
+		ac.AddMapping("orders.v1.*",
+			jwt.WeightedMapping{Subject: "orders.v2.*", Weight: 80},
+			jwt.WeightedMapping{Subject: "orders.v1shadow.*", Weight: 20})
+		token, err := ac.Encode(akp)
+		must(err)
+		must(os.WriteFile(dir+"/acc-rich.jwt", []byte(token), 0600))
+
+		ac2 := jwt.NewAccountClaims(apk)
+		ac2.Name = "tiered"
+		ac2.Limits.JetStreamTieredLimits = jwt.JetStreamTieredLimits{
+			"R1": {MemoryStorage: 1 << 20, DiskStorage: 1 << 30, Streams: 5},
+			"R3": {DiskStorage: 1 << 28, Consumer: 10},
+		}
+		token2, err := ac2.Encode(akp)
+		must(err)
+		must(os.WriteFile(dir+"/acc-tiered.jwt", []byte(token2), 0600))
+		fmt.Println("OK")
 	case "genscopedaccount": // dir → account with plain + SCOPED signing key, and an IssueUserJWT user
 		dir := os.Args[2]
 		akp, _ := nkeys.CreateAccount()

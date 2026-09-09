@@ -835,7 +835,8 @@ TEST(ServerUsableClaimsTest, ReEncodePreservesUnportedNatsFields) {
         R"(","jti":"x","sub":")" + akp->publicString() +
         R"(","nats":{"limits":{"subs":-1,"data":-1,"payload":-1,"imports":-1,)"
         R"("exports":-1,"wildcards":true,"conn":5,"leaf":-1},)"
-        R"("mappings":{"orders.*":[{"dest":"orders.v2.*","weight":100}]},)"
+        R"("exports":[{"name":"q","subject":"q.>","type":"service"}],)"
+        R"("cluster_traffic":"owner",)"
         R"("type":"account","version":2}})";
     auto b64 = [](const std::string& s) {
         std::span<const std::uint8_t> sp(
@@ -850,10 +851,14 @@ TEST(ServerUsableClaimsTest, ReEncodePreservesUnportedNatsFields) {
                         jwt::internal::base64url_encode(kp->sign(si));
 
     auto claims = jwt::decodeAccountClaims(token);
+    // conn is TYPED now — the custom value must arrive in the accessor too
+    EXPECT_EQ(claims->limits().conn, 5);
     auto nats = natsOf(claims->encode(okp->seedString()));
     EXPECT_EQ(nats.at("limits").at("conn"), 5) << "custom limit lost on re-encode";
-    EXPECT_EQ(nats.at("mappings").at("orders.*")[0].at("dest"), "orders.v2.*")
-        << "un-ported field lost on re-encode";
+    EXPECT_EQ(nats.at("exports")[0].at("subject"), "q.>")
+        << "un-ported field (exports) lost on re-encode";
+    EXPECT_EQ(nats.at("cluster_traffic"), "owner")
+        << "un-ported field (cluster_traffic) lost on re-encode";
     EXPECT_EQ(nats.at("type"), "account");
 }
 

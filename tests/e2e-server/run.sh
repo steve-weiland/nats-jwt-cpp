@@ -15,7 +15,10 @@
 #   4. scope-template enforcement: a user minted by issueUserJWT (carrying
 #      NO permissions of its own) is governed by the account's user_scope
 #      template — demo.> allowed, secret.svc a violation
-#   5. negative control: the same connection WITHOUT creds is refused
+#   5. account-limit enforcement: a second account minted with conn=1 —
+#      one connection holds, the second is refused ("maximum account active
+#      connections exceeded", the error that exposed the defaults bug)
+#   6. negative control: the same connection WITHOUT creds is refused
 #      (proves the server is actually enforcing the operator-mode auth our
 #      chain is supposed to satisfy — without this, check 2 could pass
 #      against an open server)
@@ -35,7 +38,7 @@ SRV="natsjwt-server-$$"
 
 WORK=$(mktemp -d)
 cleanup() {
-    docker rm -f "$SRV" "$SRV-resp" >/dev/null 2>&1 || true
+    docker rm -f "$SRV" "$SRV-resp" "$SRV-hold" >/dev/null 2>&1 || true
     docker network rm "$NET" >/dev/null 2>&1 || true
     rm -rf "$WORK"
 }
@@ -47,7 +50,7 @@ fail() { echo "  FAIL: $1" >&2; exit 1; }
 
 echo "e2e-server: minting the README trust chain"
 "$CPP" bootstrap "$WORK" >/dev/null
-chmod 644 "$WORK"/u.creds "$WORK"/r.creds "$WORK"/s.creds "$WORK"/resolver.conf
+chmod 644 "$WORK"/u.creds "$WORK"/r.creds "$WORK"/s.creds "$WORK"/l.creds "$WORK"/resolver.conf
 
 docker network create "$NET" >/dev/null
 docker run -d --name "$SRV" --network "$NET" \
@@ -116,7 +119,22 @@ printf '%s' "$out" | grep -q "Permissions Violation" \
 docker rm -f "$SRV-resp" >/dev/null 2>&1 || true
 check "SCOPE TEMPLATE enforced: permissionless user governed by the account's user_scope"
 
-# 5 ── negative control: no creds → refused
+# 5 ── ACCOUNT limit enforced: the limited account was minted with conn=1 —
+# while one connection holds, a second one must be refused with the very
+# error that exposed the original defaults bug, now deliberate
+docker run -d --name "$SRV-hold" --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+    nats --server nats://"$SRV":4222 --creds /w/l.creds sub limited.hold >/dev/null
+sleep 2
+if docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+        nats --server nats://"$SRV":4222 --creds /w/l.creds rtt >/dev/null 2>&1; then
+    fail "second connection on a conn=1 account was accepted — account limits not enforced"
+fi
+docker logs "$SRV" 2>&1 | grep -q "maximum account active connections exceeded" \
+    || fail "server log lacks the max-connections evidence"
+docker rm -f "$SRV-hold" >/dev/null 2>&1 || true
+check "ACCOUNT limit enforced: conn=1 account refuses a second connection"
+
+# 6 ── negative control: no creds → refused
 if docker run --rm --network "$NET" "$BOX_IMG" \
         nats --server nats://"$SRV":4222 rtt >/dev/null 2>&1; then
     fail "server accepted a connection WITHOUT credentials — auth not enforced"

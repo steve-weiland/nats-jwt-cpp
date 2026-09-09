@@ -12,6 +12,114 @@
 
 namespace jwt {
 
+namespace {
+
+    using json = nlohmann::json;
+
+    // JetStream fields sit FLAT in the target object (Go embeds the struct).
+    void jetStreamLimitsInto(json& out, const JetStreamLimits& j) {
+        if (j.memStorage != 0) out["mem_storage"] = j.memStorage;
+        if (j.diskStorage != 0) out["disk_storage"] = j.diskStorage;
+        if (j.streams != 0) out["streams"] = j.streams;
+        if (j.consumer != 0) out["consumer"] = j.consumer;
+        if (j.maxAckPending != 0) out["max_ack_pending"] = j.maxAckPending;
+        if (j.memoryMaxStreamBytes != 0) out["mem_max_stream_bytes"] = j.memoryMaxStreamBytes;
+        if (j.diskMaxStreamBytes != 0) out["disk_max_stream_bytes"] = j.diskMaxStreamBytes;
+        if (j.maxBytesRequired) out["max_bytes_required"] = true;
+    }
+
+    JetStreamLimits jetStreamLimitsFrom(const json& j) {
+        JetStreamLimits out;
+        out.memStorage = j.value("mem_storage", std::int64_t{0});
+        out.diskStorage = j.value("disk_storage", std::int64_t{0});
+        out.streams = j.value("streams", std::int64_t{0});
+        out.consumer = j.value("consumer", std::int64_t{0});
+        out.maxAckPending = j.value("max_ack_pending", std::int64_t{0});
+        out.memoryMaxStreamBytes = j.value("mem_max_stream_bytes", std::int64_t{0});
+        out.diskMaxStreamBytes = j.value("disk_max_stream_bytes", std::int64_t{0});
+        out.maxBytesRequired = j.value("max_bytes_required", false);
+        return out;
+    }
+
+    json accountLimitsToJson(const AccountLimits& l) {
+        json out = json::object();
+        if (l.subs != 0) out["subs"] = l.subs;
+        if (l.data != 0) out["data"] = l.data;
+        if (l.payload != 0) out["payload"] = l.payload;
+        if (l.imports != 0) out["imports"] = l.imports;
+        if (l.exports != 0) out["exports"] = l.exports;
+        if (l.wildcardExports) out["wildcards"] = true;  // false is ABSENT (bool omitempty)
+        if (l.disallowBearer) out["disallow_bearer"] = true;
+        if (l.conn != 0) out["conn"] = l.conn;
+        if (l.leafNodeConn != 0) out["leaf"] = l.leafNodeConn;
+        jetStreamLimitsInto(out, l.jetStream);
+        if (!l.tieredLimits.empty()) {
+            json tiers = json::object();
+            for (const auto& [name, tier] : l.tieredLimits) {
+                json t = json::object();
+                jetStreamLimitsInto(t, tier);
+                tiers[name] = t;
+            }
+            out["tiered_limits"] = tiers;
+        }
+        return out;
+    }
+
+    AccountLimits accountLimitsFromJson(const json& j) {
+        AccountLimits l;
+        l.subs = j.value("subs", std::int64_t{0});
+        l.data = j.value("data", std::int64_t{0});
+        l.payload = j.value("payload", std::int64_t{0});
+        l.imports = j.value("imports", std::int64_t{0});
+        l.exports = j.value("exports", std::int64_t{0});
+        l.wildcardExports = j.value("wildcards", false);
+        l.disallowBearer = j.value("disallow_bearer", false);
+        l.conn = j.value("conn", std::int64_t{0});
+        l.leafNodeConn = j.value("leaf", std::int64_t{0});
+        l.jetStream = jetStreamLimitsFrom(j);
+        if (j.contains("tiered_limits") && j["tiered_limits"].is_object()) {
+            for (const auto& [name, tier] : j["tiered_limits"].items()) {
+                l.tieredLimits[name] = jetStreamLimitsFrom(tier);
+            }
+        }
+        return l;
+    }
+
+    // Go's OperatorLimits.Validate + Mapping.Validate — Go treats these as
+    // ADVISORY (its tests say "don't block encoding!!!"); we enforce at
+    // encode, a documented divergence consistent with the user-claims port.
+    void validateAccountConfig(const AccountLimits& limits,
+                               const std::map<std::string, std::vector<WeightedMapping>>& mappings) {
+        if (!limits.tieredLimits.empty()) {
+            if (!(limits.jetStream == JetStreamLimits{})) {
+                throw InvalidClaimsError(
+                    "JetStream Limits and tiered JetStream Limits are mutually exclusive");
+            }
+            if (limits.tieredLimits.count("")) {
+                throw InvalidClaimsError(
+                    "Tiered JetStream Limits can not contain a blank \"\" tier name");
+            }
+        }
+        for (const auto& [from, wms] : mappings) {
+            std::map<std::string, std::uint32_t> perCluster;
+            std::uint32_t total = 0;
+            for (const auto& wm : wms) {
+                const std::uint32_t weight = wm.weight == 0 ? 100 : wm.weight;  // Go GetWeight
+                if (weight > 100) {
+                    throw InvalidClaimsError("Mapping \"" + from + "\" has a weight that exceeds 100");
+                }
+                auto& bucket = wm.cluster.empty() ? total : perCluster[wm.cluster];
+                bucket += weight;
+                if (bucket > 100) {
+                    throw InvalidClaimsError("Mapping \"" + from +
+                                             "\" exceeds 100% among all of its weighted to mappings");
+                }
+            }
+        }
+    }
+
+} // namespace
+
 class AccountClaims::Impl {
 public:
     // The full nats object as decoded, or Go's NewAccountClaims defaults for
@@ -23,13 +131,13 @@ public:
     // mappings, imports…) intact — resetting them to defaults would be
     // silent privilege escalation on the re-sign flow.
     nlohmann::json natsRaw_ = {
-        {"limits", {{"subs", -1}, {"data", -1}, {"payload", -1},
-                    {"imports", -1}, {"exports", -1}, {"wildcards", true},
-                    {"conn", -1}, {"leaf", -1}}},
-        {"default_permissions", {{"pub", nlohmann::json::object()},
-                                 {"sub", nlohmann::json::object()}}},
         {"authorization", nlohmann::json::object()},
     };
+    AccountLimits limits_;              // Go defaults: -1 no-limits (see encode)
+    Permissions defaultPermissions_;
+    std::map<std::string, std::vector<WeightedMapping>> mappings_;
+    std::string description_;
+    std::string infoURL_;
     std::string subject_;
     std::string issuer_;
     std::optional<std::string> name_;
@@ -76,6 +184,23 @@ std::optional<UserScope> AccountClaims::getScope(const std::string& signingKey) 
     return it->second;
 }
 
+AccountLimits& AccountClaims::limits() { return impl_->limits_; }
+const AccountLimits& AccountClaims::limits() const { return impl_->limits_; }
+Permissions& AccountClaims::defaultPermissions() { return impl_->defaultPermissions_; }
+const Permissions& AccountClaims::defaultPermissions() const { return impl_->defaultPermissions_; }
+std::map<std::string, std::vector<WeightedMapping>>& AccountClaims::mappings() {
+    return impl_->mappings_;
+}
+const std::map<std::string, std::vector<WeightedMapping>>& AccountClaims::mappings() const {
+    return impl_->mappings_;
+}
+void AccountClaims::setDescription(const std::string& description) {
+    impl_->description_ = description;
+}
+std::string AccountClaims::description() const { return impl_->description_; }
+void AccountClaims::setInfoURL(const std::string& url) { impl_->infoURL_ = url; }
+std::string AccountClaims::infoURL() const { return impl_->infoURL_; }
+
 std::string AccountClaims::encode(const std::string& seed) const {
     using namespace internal;
     using json = nlohmann::json;
@@ -112,7 +237,33 @@ std::string AccountClaims::encode(const std::string& seed) const {
 
     // NATS-specific claims: start from the carried nats object, then
     // overwrite the fields this port manages.
+    validateAccountConfig(impl_->limits_, impl_->mappings_);
+
     json nats_claims = impl_->natsRaw_;
+    nats_claims["limits"] = accountLimitsToJson(impl_->limits_);
+    nats_claims["default_permissions"] = {
+        {"pub", internal::permissionToJson(impl_->defaultPermissions_.pub)},
+        {"sub", internal::permissionToJson(impl_->defaultPermissions_.sub)}};
+    if (!impl_->mappings_.empty()) {
+        json maps = json::object();
+        for (const auto& [from, wms] : impl_->mappings_) {
+            json arr = json::array();
+            for (const auto& wm : wms) {
+                json entry = {{"subject", wm.subject}};
+                if (wm.weight != 0) entry["weight"] = wm.weight;
+                if (!wm.cluster.empty()) entry["cluster"] = wm.cluster;
+                arr.push_back(entry);
+            }
+            maps[from] = arr;
+        }
+        nats_claims["mappings"] = maps;
+    } else {
+        nats_claims.erase("mappings");
+    }
+    if (!impl_->description_.empty()) nats_claims["description"] = impl_->description_;
+    else nats_claims.erase("description");
+    if (!impl_->infoURL_.empty()) nats_claims["info_url"] = impl_->infoURL_;
+    else nats_claims.erase("info_url");
     if (!impl_->signingKeys_.empty()) {
         // Go serializes signing keys SORTED, plain keys as strings and
         // scoped keys as user_scope objects, in one mixed array.
@@ -251,6 +402,35 @@ std::unique_ptr<AccountClaims> decodeAccountClaims(const std::string& jwt) {
     // Create AccountClaims object
     auto claims = std::make_unique<AccountClaims>(subject);
     claims->impl_->natsRaw_ = nats;
+
+    // Typed account configuration (fix-plan group 1)
+    if (nats.contains("limits") && nats["limits"].is_object()) {
+        claims->impl_->limits_ = accountLimitsFromJson(nats["limits"]);
+    } else {
+        claims->impl_->limits_ = AccountLimits{0, 0, 0, 0, 0, false, false, 0, 0, {}, {}};
+    }
+    if (nats.contains("default_permissions") && nats["default_permissions"].is_object()) {
+        const auto& dp = nats["default_permissions"];
+        if (dp.contains("pub")) claims->impl_->defaultPermissions_.pub =
+            internal::permissionFromJson(dp["pub"]);
+        if (dp.contains("sub")) claims->impl_->defaultPermissions_.sub =
+            internal::permissionFromJson(dp["sub"]);
+    } else {
+        claims->impl_->defaultPermissions_ = Permissions{};
+    }
+    if (nats.contains("mappings") && nats["mappings"].is_object()) {
+        for (const auto& [from, arr] : nats["mappings"].items()) {
+            std::vector<WeightedMapping> wms;
+            for (const auto& entry : arr) {
+                wms.push_back({entry.value("subject", ""),
+                               static_cast<std::uint8_t>(entry.value("weight", 0)),
+                               entry.value("cluster", "")});
+            }
+            claims->impl_->mappings_[from] = std::move(wms);
+        }
+    }
+    claims->impl_->description_ = nats.value("description", "");
+    claims->impl_->infoURL_ = nats.value("info_url", "");
 
     // Populate required fields (direct access via friend declaration)
     claims->impl_->issuer_ = issuer;

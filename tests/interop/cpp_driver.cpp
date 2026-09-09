@@ -97,17 +97,32 @@ int main([[maybe_unused]] int argc, char** argv) try {
             scopedSK->seedString(), akp->publicString(), skp->publicString(), "scoped");
         std::string scopedCreds = jwt::formatUserConfig(scopedUserJwt, skp->seedString());
 
+        // a second, LIMITED account: conn=1 — the e2e proves the server
+        // enforces C++-minted ACCOUNT limits (one connection lives, the
+        // second dies with the very error that exposed the defaults bug)
+        auto lkp = nkeys::CreateAccount();
+        jwt::AccountClaims lc(lkp->publicString());
+        lc.setName("L");
+        lc.limits().conn = 1;
+        std::string limitedAccJwt = lc.encode(oskp->seedString());
+        auto lukp = nkeys::CreateUser();
+        jwt::UserClaims luc(lukp->publicString());
+        std::string limitedUserJwt = luc.encode(lkp->seedString());
+        std::string limitedCreds = jwt::formatUserConfig(limitedUserJwt, lukp->seedString());
+
         // memory-resolver config, the Go README's resolver.conf
         std::string resolver = "operator: " + opJwt + "\n\n" +
                                "resolver: MEMORY\n" +
                                "resolver_preload: {\n" +
                                "\t" + akp->publicString() + ": " + accJwt + "\n" +
+                               "\t" + lkp->publicString() + ": " + limitedAccJwt + "\n" +
                                "}\n";
 
         for (auto& [n, c] : std::vector<std::pair<std::string, std::string>>{
                  {"op.jwt", opJwt}, {"acc.jwt", accJwt}, {"user.jwt", userJwt},
                  {"u.creds", creds}, {"r.creds", restrictedCreds},
-                 {"s.creds", scopedCreds}, {"resolver.conf", resolver}})
+                 {"s.creds", scopedCreds}, {"l.creds", limitedCreds},
+                 {"resolver.conf", resolver}})
             std::ofstream(dir + "/" + n) << c;
         std::cout << "OK\n";
     } else if (mode == "richuser") { // dir → user token with full perms/limits

@@ -750,3 +750,124 @@ TEST(ScopedSigningKeysTest, ChainRejectsScopedUserWithOwnPermissions) {
     auto badUser = jwt::decodeUserClaims(bad.encode(scopedSK->seedString()));
     EXPECT_FALSE(jwt::validateIssuerChain(*badUser, *acc).valid);
 }
+
+// ============================================================================
+// Account configuration (fix-plan group 1) — typed account limits (JetStream
+// fields FLAT inside "limits", tiered_limits nested), default_permissions,
+// mappings, description/info_url. Wire facts measured from Go: bool omitempty
+// means wildcards:false is ABSENT; weight 0 means 100; tiered and plain JS
+// limits are mutually exclusive. Go does NOT block encoding of rule-violating
+// mappings (its Validate is advisory) — we enforce at encode, documented.
+// ============================================================================
+
+namespace {
+    void buildRichAccount(jwt::AccountClaims& ac) {
+        ac.setName("rich-account");
+        ac.setDescription("tenant with quotas");
+        ac.setInfoURL("https://example.com/tenant");
+        auto& l = ac.limits();
+        l.subs = 500;
+        l.data = 1LL << 30;
+        l.payload = 65536;
+        l.imports = 4;
+        l.exports = 2;
+        l.wildcardExports = false;
+        l.disallowBearer = true;
+        l.conn = 10;
+        l.leafNodeConn = 2;
+        l.jetStream = jwt::JetStreamLimits{1 << 20, 1LL << 30, 10, 100, 1000,
+                                           1 << 19, 1LL << 29, true};
+        ac.defaultPermissions().pub.allow = {"app.>"};
+        ac.defaultPermissions().sub.deny = {"app.internal.>"};
+        ac.mappings()["orders.v1.*"] = {{"orders.v2.*", 80, ""},
+                                        {"orders.v1shadow.*", 20, ""}};
+    }
+}
+
+TEST(AccountConfigTest, DecodesGoRichAccountIntoTypedFields) {
+    auto ac = jwt::decodeAccountClaims(readFixture2("acc-rich.jwt"));
+    const auto& l = ac->limits();
+    EXPECT_EQ(l.subs, 500);
+    EXPECT_EQ(l.data, 1LL << 30);
+    EXPECT_EQ(l.payload, 65536);
+    EXPECT_EQ(l.imports, 4);
+    EXPECT_EQ(l.exports, 2);
+    EXPECT_FALSE(l.wildcardExports);   // absent on the wire = false
+    EXPECT_TRUE(l.disallowBearer);
+    EXPECT_EQ(l.conn, 10);
+    EXPECT_EQ(l.leafNodeConn, 2);
+    EXPECT_EQ(l.jetStream.memStorage, 1 << 20);
+    EXPECT_EQ(l.jetStream.diskStorage, 1LL << 30);
+    EXPECT_EQ(l.jetStream.streams, 10);
+    EXPECT_EQ(l.jetStream.consumer, 100);
+    EXPECT_EQ(l.jetStream.maxAckPending, 1000);
+    EXPECT_EQ(l.jetStream.memoryMaxStreamBytes, 1 << 19);
+    EXPECT_EQ(l.jetStream.diskMaxStreamBytes, 1LL << 29);
+    EXPECT_TRUE(l.jetStream.maxBytesRequired);
+    EXPECT_TRUE(l.tieredLimits.empty());
+
+    EXPECT_EQ(ac->defaultPermissions().pub.allow, (std::vector<std::string>{"app.>"}));
+    EXPECT_EQ(ac->defaultPermissions().sub.deny,
+              (std::vector<std::string>{"app.internal.>"}));
+
+    ASSERT_EQ(ac->mappings().count("orders.v1.*"), 1u);
+    const auto& wm = ac->mappings().at("orders.v1.*");
+    ASSERT_EQ(wm.size(), 2u);
+    EXPECT_EQ(wm[0].subject, "orders.v2.*");
+    EXPECT_EQ(wm[0].weight, 80);
+    EXPECT_EQ(wm[1].weight, 20);
+
+    EXPECT_EQ(ac->description(), "tenant with quotas");
+    EXPECT_EQ(ac->infoURL(), "https://example.com/tenant");
+}
+
+TEST(AccountConfigTest, RichAccountWireEqualsGo) {
+    auto akp = nkeys::CreateAccount();
+    jwt::AccountClaims ac(akp->publicString());
+    buildRichAccount(ac);
+    auto ours = natsObjectOf(ac.encode(akp->seedString()));
+    auto golden = natsObjectOf(readFixture2("acc-rich.jwt"));
+    EXPECT_EQ(ours, golden);
+}
+
+TEST(AccountConfigTest, TieredLimitsRoundTripGoGolden) {
+    auto ac = jwt::decodeAccountClaims(readFixture2("acc-tiered.jwt"));
+    ASSERT_EQ(ac->limits().tieredLimits.size(), 2u);
+    EXPECT_EQ(ac->limits().tieredLimits.at("R1").memStorage, 1 << 20);
+    EXPECT_EQ(ac->limits().tieredLimits.at("R3").consumer, 10);
+    // re-encode: the whole nats object must survive equal (tiers included)
+    auto okp = nkeys::CreateOperator();
+    EXPECT_EQ(natsObjectOf(ac->encode(okp->seedString())),
+              natsObjectOf(readFixture2("acc-tiered.jwt")));
+}
+
+TEST(AccountConfigTest, ValidationRulesMatchGo) {
+    auto akp = nkeys::CreateAccount();
+
+    // tiered and plain JetStream limits are mutually exclusive
+    jwt::AccountClaims both(akp->publicString());
+    both.limits().jetStream.memStorage = 1;
+    both.limits().tieredLimits["R1"] = {};
+    EXPECT_THROW((void)both.encode(akp->seedString()), jwt::InvalidClaimsError);
+
+    // no blank tier name
+    jwt::AccountClaims blank(akp->publicString());
+    blank.limits().tieredLimits[""] = {};
+    EXPECT_THROW((void)blank.encode(akp->seedString()), jwt::InvalidClaimsError);
+
+    // a single mapping weight over 100
+    jwt::AccountClaims heavy(akp->publicString());
+    heavy.mappings()["a.*"] = {{"b.*", 120, ""}};
+    EXPECT_THROW((void)heavy.encode(akp->seedString()), jwt::InvalidClaimsError);
+
+    // weight 0 counts as 100 (Go's GetWeight): 0 + 20 = 120 in the default
+    // cluster → over
+    jwt::AccountClaims zeroHundred(akp->publicString());
+    zeroHundred.mappings()["a.*"] = {{"b.*", 0, ""}, {"c.*", 20, ""}};
+    EXPECT_THROW((void)zeroHundred.encode(akp->seedString()), jwt::InvalidClaimsError);
+
+    // per-cluster sums are independent: 80 in "east" + 80 in "west" is fine
+    jwt::AccountClaims clustered(akp->publicString());
+    clustered.mappings()["a.*"] = {{"b.*", 80, "east"}, {"c.*", 80, "west"}};
+    EXPECT_NO_THROW((void)clustered.encode(akp->seedString()));
+}

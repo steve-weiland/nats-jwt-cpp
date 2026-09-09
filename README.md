@@ -36,7 +36,10 @@ choice): account limits/imports/exports beyond the defaults, activation
 claims, scoped signing keys, bearer/connection-type flags, audience/tags,
 v1 token reading. Scoped signing keys ARE ported (`UserScope` +
 `issueUserJWT`) — a permissionless scoped user governed by the account's
-template is enforced against a real nats-server in CI.
+template is enforced against a real nats-server in CI. Account configuration
+is ported too: typed limits (JetStream + tiered), default permissions,
+weighted subject mappings, description/info — a conn=1 account refusing a
+second connection is likewise a CI gate.
 
 ## Quick Start
 
