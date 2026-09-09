@@ -24,7 +24,11 @@
 #      user — its creds are refused while others still work
 #   8. system account: the operator's system_account field designates $SYS —
 #      its user can ping $SYS.REQ.SERVER.PING, a regular user cannot
-#   9. negative control: the same connection WITHOUT creds is refused
+#   9. connection-type gating: a user minted with
+#      allowed_connection_types=[WEBSOCKET] is refused on a plain TCP
+#      connection (client sees "Authorization Violation", the server logs
+#      "authentication error"); the unrestricted user connects
+#  10. negative control: the same connection WITHOUT creds is refused
 #      (proves the server is actually enforcing the operator-mode auth our
 #      chain is supposed to satisfy — without this, check 2 could pass
 #      against an open server)
@@ -56,7 +60,7 @@ fail() { echo "  FAIL: $1" >&2; exit 1; }
 
 echo "e2e-server: minting the README trust chain"
 "$CPP" bootstrap "$WORK" >/dev/null
-chmod 644 "$WORK"/u.creds "$WORK"/r.creds "$WORK"/s.creds "$WORK"/l.creds "$WORK"/x.creds "$WORK"/sys.creds "$WORK"/resolver.conf "$WORK"/resolver-revoked.conf
+chmod 644 "$WORK"/u.creds "$WORK"/r.creds "$WORK"/s.creds "$WORK"/l.creds "$WORK"/x.creds "$WORK"/sys.creds "$WORK"/w.creds "$WORK"/resolver.conf "$WORK"/resolver-revoked.conf
 
 docker network create "$NET" >/dev/null
 docker run -d --name "$SRV" --network "$NET" \
@@ -187,7 +191,26 @@ printf '%s' "$out" | grep -qi "no responders\|timeout" \
     || fail "expected no responders/timeout for the regular user, got: $out"
 check "SYSTEM ACCOUNT honored: \$SYS ping answers the sys user, not a regular one"
 
-# 9 ── negative control: no creds → refused
+# 9 ── CONNECTION TYPE gated: the ws-only user's JWT allows WEBSOCKET only;
+# this is a plain TCP (STANDARD) connection, so the server must refuse it —
+# while the unrestricted user on the very same path connects fine
+# (measured: at the default log level the server records "authentication
+# error"; the specific "Connection type not allowed" line is DEBUG-only —
+# so count the errors before/after: this attempt must add one)
+autherr_before=$(docker logs "$SRV" 2>&1 | grep -c "authentication error" || true)
+if docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+        nats --server nats://"$SRV":4222 --creds /w/w.creds rtt >/dev/null 2>&1; then
+    fail "WEBSOCKET-only user was accepted over plain TCP — allowed_connection_types not enforced"
+fi
+autherr_after=$(docker logs "$SRV" 2>&1 | grep -c "authentication error" || true)
+[ "$autherr_after" -gt "$autherr_before" ] \
+    || fail "server log lacks a new authentication-error line for the ws-only user"
+docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+    nats --server nats://"$SRV":4222 --creds /w/u.creds rtt >/dev/null 2>&1 \
+    || fail "unrestricted user could not connect over the same path"
+check "CONNECTION TYPE enforced: WEBSOCKET-only user refused over plain TCP"
+
+# 10 ── negative control: no creds → refused
 if docker run --rm --network "$NET" "$BOX_IMG" \
         nats --server nats://"$SRV":4222 rtt >/dev/null 2>&1; then
     fail "server accepted a connection WITHOUT credentials — auth not enforced"

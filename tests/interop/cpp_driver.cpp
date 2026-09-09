@@ -94,6 +94,16 @@ int main([[maybe_unused]] int argc, char** argv) try {
         std::string restrictedJwt = rc.encode(askp->seedString());
         std::string restrictedCreds = jwt::formatUserConfig(restrictedJwt, rkp->seedString());
 
+        // a WEBSOCKET-ONLY user: allowed_connection_types gates the transport —
+        // the e2e proves the server refuses it on a plain TCP connection
+        auto wkp = nkeys::CreateUser();
+        jwt::UserClaims wc(wkp->publicString());
+        wc.setName("ws-only");
+        wc.setIssuerAccount(akp->publicString());
+        wc.allowedConnectionTypes() = {jwt::ConnectionType::Websocket};
+        std::string wsOnlyJwt = wc.encode(askp->seedString());
+        std::string wsOnlyCreds = jwt::formatUserConfig(wsOnlyJwt, wkp->seedString());
+
         // a SCOPED signing key on the account: its template (pub demo.> only)
         // governs users it issues — the scoped user's own JWT carries NO
         // permissions (issueUserJWT), the server applies the template
@@ -190,6 +200,7 @@ int main([[maybe_unused]] int argc, char** argv) try {
                  {"u.creds", creds}, {"r.creds", restrictedCreds},
                  {"s.creds", scopedCreds}, {"l.creds", limitedCreds},
                  {"x.creds", exporterCreds}, {"sys.creds", sysCreds},
+                 {"w.creds", wsOnlyCreds},
                  {"resolver.conf", resolver},
                  {"resolver-revoked.conf", revokedResolver}})
             std::ofstream(dir + "/" + n) << c;
@@ -213,6 +224,9 @@ int main([[maybe_unused]] int argc, char** argv) try {
         l.src = {"10.0.0.0/8", "192.168.1.0/24"};
         l.times = {{"08:00:00", "17:00:00"}};
         l.locale = "America/Los_Angeles";
+        uc.setBearerToken(true);
+        uc.setProxyRequired(true);
+        uc.allowedConnectionTypes() = {jwt::ConnectionType::Websocket, jwt::ConnectionType::Mqtt};
         std::ofstream(dir + "/rich-user.jwt") << uc.encode(akp->seedString());
         std::cout << "OK\n";
     } else if (mode == "encode") { // dir → write op/acc/user jwts + creds, README-style (direct issuance)

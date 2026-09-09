@@ -2,6 +2,7 @@
 #include "jwt/claims.hpp"
 #include "jwt/permissions.hpp"
 #include <optional>
+#include <vector>
 
 namespace jwt {
 
@@ -36,6 +37,18 @@ public:
     /// Limits (-1 = unlimited; 0 is omitted on the wire = denied by server).
     [[nodiscard]] UserLimits& limits();
     [[nodiscard]] const UserLimits& limits() const;
+
+    /// Connection flags (Go: BearerToken / ProxyRequired /
+    /// AllowedConnectionTypes on UserPermissionLimits). bearer_token skips
+    /// nonce-signing at connect (websocket/browser clients); proxy_required is
+    /// a nats-server 2.11+ feature; connection types are ConnectionType::*
+    /// strings, unvalidated here (as in Go — the server enforces them).
+    void setBearerToken(bool bearer);
+    [[nodiscard]] bool isBearerToken() const;
+    void setProxyRequired(bool required);
+    [[nodiscard]] bool proxyRequired() const;
+    [[nodiscard]] std::vector<std::string>& allowedConnectionTypes();
+    [[nodiscard]] const std::vector<std::string>& allowedConnectionTypes() const;
 
     /// Scoped users carry NO permissions/limits of their own — the server
     /// applies the issuing scope's template (Go: SetScoped). setScoped(false)

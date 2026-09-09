@@ -32,8 +32,12 @@ real nats-server in CI — encode/decode/verify, timing + chain validation,
 creds generation AND parsing (`parseDecoratedJWT`/`parseDecoratedNKey`/
 `parseDecoratedUserNKey`, plus `decorateJWT`/`decorateSeed`, byte-identical to
 Go). Un-ported fields survive decode→re-encode untouched. NOT ported (by
-choice): bearer/connection-type user flags, audience/tags, v1 token reading,
-auth-callout claims, external signers, activation hashID. Scoped signing keys ARE ported (`UserScope` +
+choice): audience/tags, v1 token reading, auth-callout claims, external
+signers, activation hashID. User connection flags ARE ported (`bearer_token`,
+`proxy_required`, `allowed_connection_types`, on users and inside scope
+templates): a WEBSOCKET-only user being refused over plain TCP is a real-
+server CI gate; bearer and proxy_required are Go-wire-gated only (the nats
+CLI always signs the nonce; proxy_required needs nats-server 2.11+). Scoped signing keys ARE ported (`UserScope` +
 `issueUserJWT`) — a permissionless scoped user governed by the account's
 template is enforced against a real nats-server in CI. Account configuration
 is ported too: typed limits (JetStream + tiered), default permissions,

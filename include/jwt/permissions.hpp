@@ -46,6 +46,19 @@ struct UserLimits {
     std::string locale;               ///< IANA timezone for times ("times_location")
 };
 
+/// Connection types a user may be limited to (Go's ConnectionType*
+/// constants). Go's jwt does NOT validate these strings — the server does —
+/// so any string is accepted; these are the ones nats-server knows.
+namespace ConnectionType {
+    inline constexpr const char* Standard   = "STANDARD";
+    inline constexpr const char* Websocket  = "WEBSOCKET";
+    inline constexpr const char* Leafnode   = "LEAFNODE";
+    inline constexpr const char* LeafnodeWS = "LEAFNODE_WS";
+    inline constexpr const char* Mqtt       = "MQTT";
+    inline constexpr const char* MqttWS     = "MQTT_WS";
+    inline constexpr const char* InProcess  = "IN_PROCESS";
+}
+
 /// A scoped signing key (Go: UserScope) — an account signing key that
 /// imposes a permission/limit TEMPLATE on every user it issues. The server
 /// replaces the user's (required-empty) permissions with this template.
@@ -55,8 +68,9 @@ struct UserScope {
     std::string description;
     Permissions permissions;  ///< template permissions
     UserLimits limits;        ///< template limits
-    bool bearerToken = false;
-    std::vector<std::string> allowedConnectionTypes;
+    bool bearerToken = false;                        ///< no nonce signing (browser/ws clients)
+    bool proxyRequired = false;                      ///< must connect through a proxy (server 2.11+)
+    std::vector<std::string> allowedConnectionTypes; ///< ConnectionType::* strings
 };
 
 } // namespace jwt

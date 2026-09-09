@@ -24,7 +24,7 @@ inline Permission permissionFromJson(const nlohmann::json& j) {
 // present; everything else per omitempty.
 inline nlohmann::json userPermissionLimitsToJson(const Permissions& perms,
                                                  const UserLimits& limits,
-                                                 bool bearerToken,
+                                                 bool bearerToken, bool proxyRequired,
                                                  const std::vector<std::string>& connTypes) {
     nlohmann::json out = nlohmann::json::object();
     out["pub"] = permissionToJson(perms.pub);
@@ -41,12 +41,14 @@ inline nlohmann::json userPermissionLimitsToJson(const Permissions& perms,
     }
     if (!limits.locale.empty()) out["times_location"] = limits.locale;
     if (bearerToken) out["bearer_token"] = true;
+    if (proxyRequired) out["proxy_required"] = true;
     if (!connTypes.empty()) out["allowed_connection_types"] = connTypes;
     return out;
 }
 
 inline void userPermissionLimitsFromJson(const nlohmann::json& j, Permissions& perms,
                                          UserLimits& limits, bool& bearerToken,
+                                         bool& proxyRequired,
                                          std::vector<std::string>& connTypes) {
     if (j.contains("pub")) perms.pub = permissionFromJson(j["pub"]);
     if (j.contains("sub")) perms.sub = permissionFromJson(j["sub"]);
@@ -64,6 +66,7 @@ inline void userPermissionLimitsFromJson(const nlohmann::json& j, Permissions& p
             limits.times.push_back({tr.value("start", ""), tr.value("end", "")});
     limits.locale = j.value("times_location", "");
     bearerToken = j.value("bearer_token", false);
+    proxyRequired = j.value("proxy_required", false);
     if (j.contains("allowed_connection_types"))
         connTypes = j["allowed_connection_types"].get<std::vector<std::string>>();
 }
@@ -74,7 +77,8 @@ inline nlohmann::json userScopeToJson(const UserScope& s) {
             {"key", s.key},
             {"role", s.role},
             {"template", userPermissionLimitsToJson(s.permissions, s.limits,
-                                                    s.bearerToken, s.allowedConnectionTypes)},
+                                                    s.bearerToken, s.proxyRequired,
+                                                    s.allowedConnectionTypes)},
             {"description", s.description}};
 }
 
@@ -85,7 +89,7 @@ inline UserScope userScopeFromJson(const nlohmann::json& j) {
     s.description = j.value("description", "");
     if (j.contains("template")) {
         userPermissionLimitsFromJson(j["template"], s.permissions, s.limits,
-                                     s.bearerToken, s.allowedConnectionTypes);
+                                     s.bearerToken, s.proxyRequired, s.allowedConnectionTypes);
     }
     return s;
 }

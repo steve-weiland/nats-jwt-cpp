@@ -114,7 +114,13 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
   treats absent as zero); src decodes from array OR comma string (Go
   leniency). Divergence, documented: Go validates locale against the IANA
   tzdb, we accept any string. Typed fields OWN their keys on encode (erased
-  when empty); everything untyped still rides natsRaw_.
+  when empty); everything untyped still rides natsRaw_. The connection flags
+  (bearer_token / proxy_required / allowed_connection_types) are part of Go's
+  UserPermissionLimits: they live on users AND in scope templates, SetScoped
+  zeroes them, and hasEmptyPermissions counts them (Go: DeepEqual) — the
+  server refuses a WEBSOCKET-only user over TCP (e2e check 9 — logged as
+  "authentication error"; "Connection type not allowed" only at -D).
+  Connection-type strings are unvalidated, as in Go.
 - `src/base64url.*` — RFC 4648 URL alphabet, no padding.
 - Claim JSON is nlohmann (alphabetical key order — irrelevant to Go, which
   ignores order); header is `{"typ":"JWT","alg":"ed25519-nkey"}`.
@@ -126,8 +132,8 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
 
 ## Known gaps
 
-Scope cuts are documented in the README (bearer/conn-type user flags,
-aud/tags, v1 reading, auth-callout, external signers, activation hashID). User permissions/limits ARE ported — real-server-enforced in CI
+Scope cuts are documented in the README (aud/tags, v1 reading,
+auth-callout, external signers, activation hashID). User permissions/limits ARE ported — real-server-enforced in CI
 (e2e check 3) — creds parse/decorate is ported (creds.hpp: parse trio
 delegates to nkeys-cpp; decorate is authenticated and byte-golden vs Go) —
 and scoped signing keys are ported (UserScope in a SORTED mixed signing_keys

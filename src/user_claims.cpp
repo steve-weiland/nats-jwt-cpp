@@ -123,6 +123,9 @@ public:
     };
     Permissions permissions_;
     UserLimits limits_;
+    bool bearerToken_ = false;
+    bool proxyRequired_ = false;
+    std::vector<std::string> allowedConnectionTypes_;
     std::string subject_;
     std::string issuer_;
     std::optional<std::string> name_;
@@ -158,10 +161,25 @@ const Permissions& UserClaims::permissions() const { return impl_->permissions_;
 UserLimits& UserClaims::limits() { return impl_->limits_; }
 const UserLimits& UserClaims::limits() const { return impl_->limits_; }
 
+void UserClaims::setBearerToken(bool bearer) { impl_->bearerToken_ = bearer; }
+bool UserClaims::isBearerToken() const { return impl_->bearerToken_; }
+void UserClaims::setProxyRequired(bool required) { impl_->proxyRequired_ = required; }
+bool UserClaims::proxyRequired() const { return impl_->proxyRequired_; }
+std::vector<std::string>& UserClaims::allowedConnectionTypes() {
+    return impl_->allowedConnectionTypes_;
+}
+const std::vector<std::string>& UserClaims::allowedConnectionTypes() const {
+    return impl_->allowedConnectionTypes_;
+}
+
 void UserClaims::setScoped(bool scoped) {
     // Go's SetScoped: scoped users carry NO permissions or limits of their
     // own (all zero — omitted on the wire); the server applies the scope's
-    // template. Unscoping restores the -1 no-limit defaults.
+    // template. Unscoping restores the -1 no-limit defaults. The connection
+    // flags are part of UserPermissionLimits too, so they reset either way.
+    impl_->bearerToken_ = false;
+    impl_->proxyRequired_ = false;
+    impl_->allowedConnectionTypes_.clear();
     if (scoped) {
         impl_->permissions_ = Permissions{};
         impl_->limits_ = UserLimits{0, 0, 0, {}, {}, ""};
@@ -174,9 +192,12 @@ void UserClaims::setScoped(bool scoped) {
 bool UserClaims::hasEmptyPermissions() const {
     const auto& p = impl_->permissions_;
     const auto& l = impl_->limits_;
+    // Go: reflect.DeepEqual against the zero UserPermissionLimits — the
+    // connection flags count too.
     return p.pub.empty() && p.sub.empty() && !p.resp && l.subs == 0 &&
            l.data == 0 && l.payload == 0 && l.src.empty() && l.times.empty() &&
-           l.locale.empty();
+           l.locale.empty() && !impl_->bearerToken_ && !impl_->proxyRequired_ &&
+           impl_->allowedConnectionTypes_.empty();
 }
 
 std::string UserClaims::encode(const std::string& seed) const {
@@ -250,6 +271,15 @@ std::string UserClaims::encode(const std::string& seed) const {
     }
     if (!impl_->limits_.locale.empty()) nats_claims["times_location"] = impl_->limits_.locale;
     else nats_claims.erase("times_location");
+    if (impl_->bearerToken_) nats_claims["bearer_token"] = true;
+    else nats_claims.erase("bearer_token");
+    if (impl_->proxyRequired_) nats_claims["proxy_required"] = true;
+    else nats_claims.erase("proxy_required");
+    if (!impl_->allowedConnectionTypes_.empty()) {
+        nats_claims["allowed_connection_types"] = impl_->allowedConnectionTypes_;
+    } else {
+        nats_claims.erase("allowed_connection_types");
+    }
     nats_claims["type"] = "user";
     nats_claims["version"] = JWT_VERSION;
     payload["nats"] = nats_claims;
@@ -406,6 +436,12 @@ std::unique_ptr<UserClaims> decodeUserClaims(const std::string& jwt) {
         }
     }
     lims.locale = nats.value("times_location", "");
+    claims->impl_->bearerToken_ = nats.value("bearer_token", false);
+    claims->impl_->proxyRequired_ = nats.value("proxy_required", false);
+    if (nats.contains("allowed_connection_types") && nats["allowed_connection_types"].is_array()) {
+        claims->impl_->allowedConnectionTypes_ =
+            nats["allowed_connection_types"].get<std::vector<std::string>>();
+    }
 
     // Populate required fields (direct access via friend declaration)
     claims->impl_->issuer_ = issuer;

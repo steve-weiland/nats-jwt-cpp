@@ -18,7 +18,8 @@
 #   6. Go-minted already-expired token decodes in C++ (expiry is validity,
 #      not structure)
 #   7. typed permissions/limits: a C++-minted rich user parses into Go's
-#      TYPED fields with the intended values (fix-plan #1+#2)
+#      TYPED fields with the intended values (fix-plan #1+#2), including the
+#      bearer/proxy/connection-type flags (group 5c)
 #   8. round-trip: Go decodes a C++ user token, C++ decodes it back
 set -eu
 
@@ -96,7 +97,8 @@ for expect in \
     'sub.allow=[demo.> jobs.* workers]' \
     'resp=5,2s' \
     'subs=100 data=1048576 payload=4096' \
-    'src=[10.0.0.0/8 192.168.1.0/24] times=[{08:00:00 17:00:00}] locale=America/Los_Angeles'
+    'src=[10.0.0.0/8 192.168.1.0/24] times=[{08:00:00 17:00:00}] locale=America/Los_Angeles' \
+    'bearer=true proxy=true conn_types=[WEBSOCKET MQTT]'
 do
     printf '%s\n' "$perms" | grep -qF "$expect" \
         || fail "Go's typed parse missing: $expect (got: $perms)"

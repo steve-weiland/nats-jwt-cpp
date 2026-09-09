@@ -82,6 +82,9 @@ func main() {
 		uc.Limits.Src.Add("10.0.0.0/8", "192.168.1.0/24")
 		uc.Limits.Times = []jwt.TimeRange{{Start: "08:00:00", End: "17:00:00"}}
 		uc.Limits.Locale = "America/Los_Angeles"
+		uc.BearerToken = true
+		uc.ProxyRequired = true
+		uc.AllowedConnectionTypes.Add(jwt.ConnectionTypeWebsocket, jwt.ConnectionTypeMqtt)
 		token, err := uc.Encode(akp)
 		must(err)
 		must(os.WriteFile(dir+"/rich-user.jwt", []byte(token), 0600))
@@ -103,6 +106,7 @@ func main() {
 		}
 		fmt.Printf("subs=%d data=%d payload=%d\n", uc.Limits.Subs, uc.Limits.Data, uc.Limits.Payload)
 		fmt.Printf("src=%v times=%v locale=%s\n", uc.Limits.Src, uc.Limits.Times, uc.Limits.Locale)
+		fmt.Printf("bearer=%v proxy=%v conn_types=%v\n", uc.BearerToken, uc.ProxyRequired, uc.AllowedConnectionTypes)
 	case "genrichoperator": // dir → operator with all resolver-wiring fields
 		dir := os.Args[2]
 		okp, _ := nkeys.CreateOperator()

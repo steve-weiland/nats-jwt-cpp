@@ -510,6 +510,9 @@ namespace {
         l.src = {"10.0.0.0/8", "192.168.1.0/24"};
         l.times = {{"08:00:00", "17:00:00"}};
         l.locale = "America/Los_Angeles";
+        uc.setBearerToken(true);
+        uc.setProxyRequired(true);
+        uc.allowedConnectionTypes() = {jwt::ConnectionType::Websocket, jwt::ConnectionType::Mqtt};
     }
 }
 
@@ -532,6 +535,9 @@ TEST(UserPermissionsTest, DecodesGoRichUserIntoTypedFields) {
     EXPECT_EQ(l.times[0].start, "08:00:00");
     EXPECT_EQ(l.times[0].end, "17:00:00");
     EXPECT_EQ(l.locale, "America/Los_Angeles");
+    EXPECT_TRUE(uc->isBearerToken());
+    EXPECT_TRUE(uc->proxyRequired());
+    EXPECT_EQ(uc->allowedConnectionTypes(), (std::vector<std::string>{"WEBSOCKET", "MQTT"}));
 }
 
 TEST(UserPermissionsTest, EncodeMatchesGoWireShapeExactly) {
@@ -629,6 +635,152 @@ TEST(UserPermissionsTest, SrcAcceptsCommaStringOnDecode) {
         reinterpret_cast<const std::uint8_t*>(si.data()), si.size());
     auto uc = jwt::decodeUserClaims(si + "." + jwt::internal::base64url_encode(kp->sign(sib)));
     EXPECT_EQ(uc->limits().src, (std::vector<std::string>{"10.0.0.0/8", "192.168.1.0/24"}));
+}
+
+// ============================================================================
+// User-level bearer_token / proxy_required / allowed_connection_types
+// (fix-plan group 5c). Go: all three live in UserPermissionLimits (so a
+// UserScope TEMPLATE carries them too), all omitempty; SetScoped zeroes them
+// with the rest; HasEmptyPermissions is a DeepEqual against the zero value,
+// so a scoped user with any of them set is invalid. Go's jwt does NOT
+// validate the connection-type strings (the server does).
+// ============================================================================
+
+TEST(UserConnectionFlagsTest, ConnectionTypeConstantsMatchGo) {
+    EXPECT_STREQ(jwt::ConnectionType::Standard, "STANDARD");
+    EXPECT_STREQ(jwt::ConnectionType::Websocket, "WEBSOCKET");
+    EXPECT_STREQ(jwt::ConnectionType::Leafnode, "LEAFNODE");
+    EXPECT_STREQ(jwt::ConnectionType::LeafnodeWS, "LEAFNODE_WS");
+    EXPECT_STREQ(jwt::ConnectionType::Mqtt, "MQTT");
+    EXPECT_STREQ(jwt::ConnectionType::MqttWS, "MQTT_WS");
+    EXPECT_STREQ(jwt::ConnectionType::InProcess, "IN_PROCESS");
+}
+
+TEST(UserConnectionFlagsTest, RoundTripWithGoWireKeys) {
+    auto akp = nkeys::CreateAccount();
+    auto ukp = nkeys::CreateUser();
+    jwt::UserClaims uc(ukp->publicString());
+    EXPECT_FALSE(uc.isBearerToken());
+    EXPECT_FALSE(uc.proxyRequired());
+    EXPECT_TRUE(uc.allowedConnectionTypes().empty());
+    uc.setBearerToken(true);
+    uc.setProxyRequired(true);
+    uc.allowedConnectionTypes() = {jwt::ConnectionType::Websocket, jwt::ConnectionType::Mqtt};
+
+    auto token = uc.encode(akp->seedString());
+    auto nats = natsObjectOf(token);
+    EXPECT_EQ(nats.at("bearer_token"), true);
+    EXPECT_EQ(nats.at("proxy_required"), true);
+    EXPECT_EQ(nats.at("allowed_connection_types"),
+              (std::vector<std::string>{"WEBSOCKET", "MQTT"}));
+
+    auto dec = jwt::decodeUserClaims(token);
+    EXPECT_TRUE(dec->isBearerToken());
+    EXPECT_TRUE(dec->proxyRequired());
+    EXPECT_EQ(dec->allowedConnectionTypes(),
+              (std::vector<std::string>{"WEBSOCKET", "MQTT"}));
+}
+
+TEST(UserConnectionFlagsTest, OmitemptyAndTypedFieldsOwnTheirKeys) {
+    auto akp = nkeys::CreateAccount();
+    auto ukp = nkeys::CreateUser();
+    jwt::UserClaims uc(ukp->publicString());
+    // fresh: none of the three keys
+    auto fresh = natsObjectOf(uc.encode(akp->seedString()));
+    for (const char* absent : {"bearer_token", "proxy_required", "allowed_connection_types"}) {
+        EXPECT_FALSE(fresh.contains(absent)) << absent;
+    }
+    // set → decode → clear → re-encode: the keys must vanish (no stale raw leak)
+    uc.setBearerToken(true);
+    uc.setProxyRequired(true);
+    uc.allowedConnectionTypes() = {jwt::ConnectionType::Websocket};
+    auto dec = jwt::decodeUserClaims(uc.encode(akp->seedString()));
+    dec->setBearerToken(false);
+    dec->setProxyRequired(false);
+    dec->allowedConnectionTypes().clear();
+    auto cleared = natsObjectOf(dec->encode(akp->seedString()));
+    for (const char* absent : {"bearer_token", "proxy_required", "allowed_connection_types"}) {
+        EXPECT_FALSE(cleared.contains(absent)) << absent;
+    }
+}
+
+TEST(UserConnectionFlagsTest, ScopedUsersMayNotCarryThem) {
+    auto ukp = nkeys::CreateUser();
+    // each flag alone breaks HasEmptyPermissions (Go: DeepEqual on the whole
+    // UserPermissionLimits), and SetScoped zeroes them
+    {
+        jwt::UserClaims uc(ukp->publicString());
+        uc.setScoped(true);
+        ASSERT_TRUE(uc.hasEmptyPermissions());
+        uc.setBearerToken(true);
+        EXPECT_FALSE(uc.hasEmptyPermissions());
+        uc.setScoped(true);
+        EXPECT_TRUE(uc.hasEmptyPermissions());
+        EXPECT_FALSE(uc.isBearerToken());
+    }
+    {
+        jwt::UserClaims uc(ukp->publicString());
+        uc.setScoped(true);
+        uc.setProxyRequired(true);
+        EXPECT_FALSE(uc.hasEmptyPermissions());
+        uc.setScoped(true);
+        EXPECT_FALSE(uc.proxyRequired());
+    }
+    {
+        jwt::UserClaims uc(ukp->publicString());
+        uc.setScoped(true);
+        uc.allowedConnectionTypes() = {jwt::ConnectionType::Standard};
+        EXPECT_FALSE(uc.hasEmptyPermissions());
+        uc.setScoped(true);
+        EXPECT_TRUE(uc.allowedConnectionTypes().empty());
+    }
+    // and the chain refuses a scoped-key-issued user that carries bearer
+    auto akp = nkeys::CreateAccount();
+    auto scopedSK = nkeys::CreateAccount();
+    jwt::UserScope scope;
+    scope.key = scopedSK->publicString();
+    scope.role = "bearer-only";
+    scope.bearerToken = true;
+    jwt::AccountClaims ac(akp->publicString());
+    ac.setScope(scope);
+    auto okp = nkeys::CreateOperator();
+    auto acc = jwt::decodeAccountClaims(ac.encode(okp->seedString()));
+    jwt::UserClaims bad(ukp->publicString());
+    bad.setScoped(true);
+    bad.setBearerToken(true);
+    bad.setIssuerAccount(akp->publicString());
+    auto badUser = jwt::decodeUserClaims(bad.encode(scopedSK->seedString()));
+    EXPECT_FALSE(jwt::validateIssuerChain(*badUser, *acc).valid);
+}
+
+TEST(UserConnectionFlagsTest, ScopeTemplateCarriesAllThreeThroughReEncode) {
+    // proxy_required was previously DROPPED by the template serializer (the
+    // template is written fresh, no carry layer) — a Go scope carrying it
+    // lost it on C++ re-encode. All three must survive decode → re-encode.
+    auto okp = nkeys::CreateOperator();
+    auto akp = nkeys::CreateAccount();
+    auto scopedSK = nkeys::CreateAccount();
+    jwt::UserScope scope;
+    scope.key = scopedSK->publicString();
+    scope.role = "ws-bearer";
+    scope.bearerToken = true;
+    scope.proxyRequired = true;
+    scope.allowedConnectionTypes = {jwt::ConnectionType::Websocket};
+    jwt::AccountClaims ac(akp->publicString());
+    ac.setScope(scope);
+    auto first = ac.encode(okp->seedString());
+    auto dec = jwt::decodeAccountClaims(first);
+    auto got = dec->getScope(scopedSK->publicString());
+    ASSERT_TRUE(got.has_value());
+    EXPECT_TRUE(got->bearerToken);
+    EXPECT_TRUE(got->proxyRequired);
+    EXPECT_EQ(got->allowedConnectionTypes, (std::vector<std::string>{"WEBSOCKET"}));
+    auto second = natsObjectOf(dec->encode(okp->seedString()));
+    const auto& tmpl = second.at("signing_keys").at(0).at("template");
+    EXPECT_EQ(tmpl.at("bearer_token"), true);
+    EXPECT_EQ(tmpl.at("proxy_required"), true);
+    EXPECT_EQ(tmpl.at("allowed_connection_types"), (std::vector<std::string>{"WEBSOCKET"}));
+    EXPECT_EQ(second, natsObjectOf(first));
 }
 
 // ============================================================================
