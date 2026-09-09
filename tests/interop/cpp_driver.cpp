@@ -118,8 +118,12 @@ int main([[maybe_unused]] int argc, char** argv) try {
         auto xkp = nkeys::CreateAccount();
         jwt::AccountClaims xc(xkp->publicString());
         xc.setName("X");
-        xc.exports().push_back({.name = "billing", .subject = "billing.charge",
-                                .type = jwt::ExportType::Service, .tokenReq = true});
+        jwt::Export billing;
+        billing.name = "billing";
+        billing.subject = "billing.charge";
+        billing.type = jwt::ExportType::Service;
+        billing.tokenReq = true;
+        xc.exports().push_back(billing);
         std::string exporterJwt = xc.encode(oskp->seedString());
         auto xukp = nkeys::CreateUser();
         jwt::UserClaims xuc(xukp->publicString());
@@ -131,10 +135,14 @@ int main([[maybe_unused]] int argc, char** argv) try {
         grant.setImportSubject("billing.charge");
         grant.setImportType(jwt::ExportType::Service);
         std::string grantJwt = grant.encode(xkp->seedString());
-        received->imports().push_back({.name = "billing", .subject = "billing.charge",
-                                       .account = xkp->publicString(), .token = grantJwt,
-                                       .localSubject = "ext.billing.charge",
-                                       .type = jwt::ExportType::Service});
+        jwt::Import billingImport;
+        billingImport.name = "billing";
+        billingImport.subject = "billing.charge";
+        billingImport.account = xkp->publicString();
+        billingImport.token = grantJwt;
+        billingImport.localSubject = "ext.billing.charge";
+        billingImport.type = jwt::ExportType::Service;
+        received->imports().push_back(billingImport);
         accJwt = received->encode(oskp->seedString());  // re-sign WITH the import
 
         // a REVOKED variant of the main account: the restricted user is

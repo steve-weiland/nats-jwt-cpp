@@ -1041,29 +1041,33 @@ TEST(CrossAccountTest, ValidationRulesMatchGo) {
 
     // stream exports can't carry response types or latency
     jwt::AccountClaims s1(akp->publicString());
-    s1.exports().push_back({.name = "t", .subject = "t.>",
-                            .type = jwt::ExportType::Stream,
-                            .responseType = "Singleton"});
+    jwt::Export e1;
+    e1.name = "t"; e1.subject = "t.>"; e1.type = jwt::ExportType::Stream;
+    e1.responseType = "Singleton";
+    s1.exports().push_back(e1);
     EXPECT_THROW((void)s1.encode(akp->seedString()), jwt::InvalidClaimsError);
 
     jwt::AccountClaims s2(akp->publicString());
-    s2.exports().push_back({.name = "t", .subject = "t.>",
-                            .type = jwt::ExportType::Stream,
-                            .latency = jwt::ServiceLatency{40, "lat"}});
+    jwt::Export e2;
+    e2.name = "t"; e2.subject = "t.>"; e2.type = jwt::ExportType::Stream;
+    e2.latency = jwt::ServiceLatency{40, "lat"};
+    s2.exports().push_back(e2);
     EXPECT_THROW((void)s2.encode(akp->seedString()), jwt::InvalidClaimsError);
 
     // latency sampling outside 1..100 (0 = "headers" is legal)
     jwt::AccountClaims s3(akp->publicString());
-    s3.exports().push_back({.name = "b", .subject = "b.x",
-                            .type = jwt::ExportType::Service,
-                            .latency = jwt::ServiceLatency{150, "lat"}});
+    jwt::Export e3;
+    e3.name = "b"; e3.subject = "b.x"; e3.type = jwt::ExportType::Service;
+    e3.latency = jwt::ServiceLatency{150, "lat"};
+    s3.exports().push_back(e3);
     EXPECT_THROW((void)s3.encode(akp->seedString()), jwt::InvalidClaimsError);
 
     // share is service-only; allow_trace is stream-only (imports)
     jwt::AccountClaims s4(bkp->publicString());
-    s4.imports().push_back({.name = "t", .subject = "t.>",
-                            .account = akp->publicString(),
-                            .type = jwt::ExportType::Stream, .share = true});
+    jwt::Import i4;
+    i4.name = "t"; i4.subject = "t.>"; i4.account = akp->publicString();
+    i4.type = jwt::ExportType::Stream; i4.share = true;
+    s4.imports().push_back(i4);
     EXPECT_THROW((void)s4.encode(bkp->seedString()), jwt::InvalidClaimsError);
 
     // an import token must come from the account it names
@@ -1073,9 +1077,10 @@ TEST(CrossAccountTest, ValidationRulesMatchGo) {
     grant.setImportType(jwt::ExportType::Service);
     auto token = grant.encode(other->seedString());  // issued by the WRONG account
     jwt::AccountClaims s5(bkp->publicString());
-    s5.imports().push_back({.name = "b", .subject = "b.x",
-                            .account = akp->publicString(), .token = token,
-                            .type = jwt::ExportType::Service});
+    jwt::Import i5;
+    i5.name = "b"; i5.subject = "b.x"; i5.account = akp->publicString();
+    i5.token = token; i5.type = jwt::ExportType::Service;
+    s5.imports().push_back(i5);
     EXPECT_THROW((void)s5.encode(bkp->seedString()), jwt::InvalidClaimsError);
 }
 
@@ -1083,9 +1088,10 @@ TEST(CrossAccountTest, HeadersSamplingRoundTrips) {
     // Go marshals SamplingRate 0 as the string "headers"
     auto akp = nkeys::CreateAccount();
     jwt::AccountClaims ac(akp->publicString());
-    ac.exports().push_back({.name = "b", .subject = "b.x",
-                            .type = jwt::ExportType::Service,
-                            .latency = jwt::ServiceLatency{0, "lat"}});
+    jwt::Export eh;
+    eh.name = "b"; eh.subject = "b.x"; eh.type = jwt::ExportType::Service;
+    eh.latency = jwt::ServiceLatency{0, "lat"};
+    ac.exports().push_back(eh);
     auto nats = natsObjectOf(ac.encode(akp->seedString()));
     EXPECT_EQ(nats.at("exports")[0].at("service_latency").at("sampling"), "headers");
     auto rt = jwt::decodeAccountClaims(ac.encode(akp->seedString()));
