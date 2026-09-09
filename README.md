@@ -32,8 +32,13 @@ real nats-server in CI — encode/decode/verify, timing + chain validation,
 creds generation AND parsing (`parseDecoratedJWT`/`parseDecoratedNKey`/
 `parseDecoratedUserNKey`, plus `decorateJWT`/`decorateSeed`, byte-identical to
 Go). Un-ported fields survive decode→re-encode untouched. NOT ported (by
-choice): audience/tags, v1 token reading, auth-callout claims, activation
-hashID. External signers ARE ported: `encodeWithSigner(issuerPublicKey,
+choice): audience/tags on the legacy claim types, v1 token reading,
+activation hashID, xkey-encrypted callout traffic. Auth callout IS ported:
+account `authorization` config (`ExternalAuthorization`), plus
+`AuthorizationRequestClaims` / `AuthorizationResponseClaims` — in CI a
+`nats reply` service shelling out to this library answers real nats-server
+requests, admitting one C++-minted sentinel into another account and
+refusing another (see `tests/e2e-server/run.sh`, check 10). External signers ARE ported: `encodeWithSigner(issuerPublicKey,
 SignFn)` on every claim type (Go's EncodeWithSigner) — the private key stays
 in your HSM/KMS, and the returned signature is verified against the named
 issuer before a token is emitted (a deliberate divergence: Go emits whatever
@@ -104,6 +109,19 @@ auto result = jwt::validateChain(chain, jwt::ValidationOptions::strict());
 
 // Generate NATS credentials file
 std::string creds = jwt::formatUserConfig(user_jwt, user_kp->seedString());
+
+// Auth callout service: answer a nats-server authorization request
+auto rq = jwt::decodeAuthorizationRequestClaims(request_jwt);   // signed by the SERVER key
+jwt::AuthorizationResponseClaims rs(rq->userNkey());             // for exactly this user nkey
+rs.setAudience(rq->server().id);                                 // to exactly this server
+if (rq->connectOptions().password == "secret") {
+    jwt::UserClaims admitted(rq->userNkey());                    // the grant: a user JWT
+    admitted.permissions().pub.allow = {"orders.>"};
+    rs.setJwt(admitted.encode(target_account_seed));
+} else {
+    rs.setError("bad credentials");
+}
+std::string response_jwt = rs.encode(callout_account_seed);      // account key (or signing key + setIssuerAccount)
 
 // Key custody elsewhere (HSM/KMS): sign through a callback — only the PUBLIC
 // key is passed in; it becomes `iss` and the signature is checked against it

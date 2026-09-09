@@ -3,6 +3,7 @@
 #include "jwt/account_claims.hpp"
 #include "jwt/user_claims.hpp"
 #include "jwt/activation_claims.hpp"
+#include "jwt/authorization_claims.hpp"
 #include "base64url.hpp"
 #include "jwt_utils.hpp"
 #include <nlohmann/json.hpp>
@@ -43,6 +44,10 @@ std::unique_ptr<Claims> decode(const std::string& jwt) {
         return decodeUserClaims(jwt);
     } else if (type == "activation") {
         return decodeActivationClaims(jwt);
+    } else if (type == "authorization_request") {
+        return decodeAuthorizationRequestClaims(jwt);
+    } else if (type == "authorization_response") {
+        return decodeAuthorizationResponseClaims(jwt);
     } else {
         throw InvalidClaimsError("Unknown JWT type: " + type);
     }

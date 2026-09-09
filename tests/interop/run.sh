@@ -22,6 +22,9 @@
 #      TYPED fields with the intended values (fix-plan #1+#2), including the
 #      bearer/proxy/connection-type flags (group 5c)
 #   8. round-trip: Go decodes a C++ user token, C++ decodes it back
+#   9. auth callout: C++-minted account-with-authorization, server-signed
+#      request and responses pass Go Decode + Validate with no issues, and
+#      Go's goldens (incl. a REAL nats-server request) decode in C++
 set -eu
 
 BUILD_DIR=${1:?usage: run.sh <cmake-build-dir>}
@@ -116,6 +119,23 @@ check "C++ typed permissions/limits parse into Go's types with intended values"
 "$GO" decode "$TMP/cpp/user.jwt" >/dev/null && "$CPP" decode user "$TMP/cpp/user.jwt" >/dev/null \
     || fail "round-trip decode failed"
 check "round-trip: both sides decode the same C++ user token"
+
+# 9 ── auth callout, both directions
+mkdir -p "$TMP/auth-cpp" "$TMP/auth-go"
+"$CPP" genauth "$TMP/auth-cpp" >/dev/null
+for f in acc-auth auth-request auth-response auth-response-err; do
+    out=$("$GO" validate "$TMP/auth-cpp/$f.jwt") || fail "Go rejected C++-minted $f.jwt"
+    printf '%s' "$out" | grep -q "ISSUE:" && fail "Go Validate found issues in C++-minted $f.jwt: $out"
+done
+"$GO" genauth "$TMP/auth-go" >/dev/null
+for f in acc-auth:account auth-request:authorization_request auth-response:authorization_response \
+         auth-response-err:authorization_response; do
+    name=${f%%:*}; type=${f##*:}
+    out=$("$CPP" decode "$type" "$TMP/auth-go/$name.jwt") || fail "C++ rejected Go-minted $name.jwt"
+done
+"$CPP" decode authorization_request "$REPO/tests/fixtures/auth-request-server.jwt" >/dev/null \
+    || fail "C++ rejected the REAL nats-server authorization request fixture"
+check "auth callout: C++ artifacts pass Go Decode+Validate; Go's (and nats-server's) decode in C++"
 
 echo
 echo "INTEROP PASS ($pass checks)"

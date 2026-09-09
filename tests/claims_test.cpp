@@ -6,6 +6,7 @@
 #include "jwt/operator_claims.hpp"
 #include "jwt/account_claims.hpp"
 #include "jwt/activation_claims.hpp"
+#include "jwt/authorization_claims.hpp"
 #include "jwt/user_claims.hpp"
 #include <nkeys/nkeys.hpp>
 
@@ -1334,4 +1335,249 @@ TEST(OperatorWiringTest, ValidationRulesMatchGo) {
     jwt::OperatorClaims badSk(okp->publicString());
     badSk.addSigningKey(ukp->publicString());
     EXPECT_THROW((void)badSk.encode(okp->seedString()), jwt::InvalidClaimsError);
+}
+
+// ============================================================================
+// Auth callout (fix-plan group 5a) — account `authorization` config plus the
+// authorization_request / authorization_response claim types. MEASURED on
+// nats-server 2.10.29 (operator mode): the callout fires only for clients
+// presenting a user JWT of an external-auth account (a "sentinel"); the
+// request has iss = SERVER key, sub = the callout account, aud =
+// "nats-authorization-request"; the response must have sub = user_nkey,
+// aud = server ID, and be signed by the account key or a signing key with
+// issuer_account; the embedded user JWT may be issued by any allowed_accounts
+// member (identity or signing key). Go wire facts: `authorization` is ALWAYS
+// emitted on accounts ({} when unset); on requests server_id/client_info/
+// connect_opts are always present and connect_opts.protocol is never omitted.
+// ============================================================================
+
+TEST(ExternalAuthorizationTest, DecodesGoAccountAndReEncodesEqual) {
+    auto ac = jwt::decodeAccountClaims(readFixture2("acc-auth.jwt"));
+    const auto& a = ac->authorization();
+    ASSERT_EQ(a.authUsers.size(), 2u);
+    EXPECT_TRUE(nkeys::IsValidPublicUserKey(a.authUsers[0]));
+    ASSERT_EQ(a.allowedAccounts.size(), 1u);
+    EXPECT_TRUE(nkeys::IsValidPublicAccountKey(a.allowedAccounts[0]));
+    EXPECT_TRUE(nkeys::IsValidPublicCurveKey(a.xkey));
+    EXPECT_TRUE(ac->hasExternalAuthorization());
+    auto okp = nkeys::CreateOperator();
+    EXPECT_EQ(natsObjectOf(ac->encode(okp->seedString())), natsObjectOf(readFixture2("acc-auth.jwt")));
+}
+
+TEST(ExternalAuthorizationTest, FreshAccountEmitsEmptyObjectAndTypedFieldsOwnIt) {
+    auto okp = nkeys::CreateOperator();
+    jwt::AccountClaims ac(nkeys::CreateAccount()->publicString());
+    EXPECT_FALSE(ac.hasExternalAuthorization());
+    auto fresh = natsObjectOf(ac.encode(okp->seedString()));
+    EXPECT_EQ(fresh.at("authorization"), nlohmann::json::object());  // Go: struct, never omitted
+    auto u = nkeys::CreateUser()->publicString();
+    ac.enableExternalAuthorization({u});
+    EXPECT_TRUE(ac.hasExternalAuthorization());
+    ac.authorization().allowedAccounts = {jwt::AnyAccount};
+    auto set = natsObjectOf(ac.encode(okp->seedString()));
+    EXPECT_EQ(set.at("authorization").at("auth_users"), (std::vector<std::string>{u}));
+    EXPECT_EQ(set.at("authorization").at("allowed_accounts"), (std::vector<std::string>{"*"}));
+    EXPECT_FALSE(set.at("authorization").contains("xkey"));
+    auto dec = jwt::decodeAccountClaims(ac.encode(okp->seedString()));
+    dec->authorization() = jwt::ExternalAuthorization{};
+    EXPECT_EQ(natsObjectOf(dec->encode(okp->seedString())).at("authorization"), nlohmann::json::object());
+}
+
+TEST(ExternalAuthorizationTest, ValidationRulesMatchGo) {
+    auto okp = nkeys::CreateOperator();
+    auto u = nkeys::CreateUser()->publicString();
+    auto a = nkeys::CreateAccount()->publicString();
+    auto mk = [] { return jwt::AccountClaims(nkeys::CreateAccount()->publicString()); };
+    // accounts without users
+    { auto ac = mk(); ac.authorization().allowedAccounts = {a};
+      EXPECT_THROW((void)ac.encode(okp->seedString()), jwt::InvalidClaimsError); }
+    // auth user must be a USER key
+    { auto ac = mk(); ac.authorization().authUsers = {a};
+      EXPECT_THROW((void)ac.encode(okp->seedString()), jwt::InvalidClaimsError); }
+    // allowed accounts: account keys, or exactly ["*"]
+    { auto ac = mk(); ac.authorization().authUsers = {u}; ac.authorization().allowedAccounts = {u};
+      EXPECT_THROW((void)ac.encode(okp->seedString()), jwt::InvalidClaimsError); }
+    { auto ac = mk(); ac.authorization().authUsers = {u}; ac.authorization().allowedAccounts = {"*", a};
+      EXPECT_THROW((void)ac.encode(okp->seedString()), jwt::InvalidClaimsError); }
+    { auto ac = mk(); ac.authorization().authUsers = {u}; ac.authorization().allowedAccounts = {"*"};
+      EXPECT_NO_THROW((void)ac.encode(okp->seedString())); }
+    // xkey must be a CURVE public key
+    { auto ac = mk(); ac.authorization().authUsers = {u}; ac.authorization().xkey = a;
+      EXPECT_THROW((void)ac.encode(okp->seedString()), jwt::InvalidClaimsError); }
+    { auto ac = mk(); ac.authorization().authUsers = {u};
+      ac.authorization().xkey = nkeys::CreateCurveKeys()->publicString();
+      EXPECT_NO_THROW((void)ac.encode(okp->seedString())); }
+}
+
+TEST(AuthorizationRequestTest, DecodesRealServerRequest) {
+    // minted by nats-server 2.10.29 during the measurement run — expired by
+    // now (exp = iat + auth_timeout), which is validity, not structure
+    auto rq = jwt::decodeAuthorizationRequestClaims(readFixture2("auth-request-server.jwt"));
+    EXPECT_TRUE(nkeys::IsValidPublicServerKey(rq->issuer()));
+    EXPECT_TRUE(nkeys::IsValidPublicAccountKey(rq->subject()));
+    EXPECT_EQ(rq->audience(), "nats-authorization-request");
+    EXPECT_EQ(rq->server().id, rq->issuer());
+    EXPECT_EQ(rq->server().version, "2.10.29");
+    EXPECT_TRUE(nkeys::IsValidPublicUserKey(rq->userNkey()));
+    EXPECT_EQ(rq->clientInformation().user, "alice");
+    EXPECT_EQ(rq->clientInformation().nameTag, "sentinel");
+    EXPECT_EQ(rq->clientInformation().kind, "Client");
+    EXPECT_EQ(rq->clientInformation().id, 9u);
+    EXPECT_EQ(rq->connectOptions().username, "alice");
+    EXPECT_EQ(rq->connectOptions().password, "secret");
+    EXPECT_EQ(rq->connectOptions().protocol, 1);
+    EXPECT_FALSE(rq->connectOptions().jwt.empty());
+    EXPECT_FALSE(rq->tls().has_value());
+    // the sentinel JWT inside connect_opts is itself an authenticated decode
+    auto sentinel = jwt::decodeUserClaims(rq->connectOptions().jwt);
+    EXPECT_EQ(sentinel->name().value_or(""), "sentinel");
+    EXPECT_EQ(sentinel->issuer(), rq->subject());
+    // generic dispatch + decorate
+    EXPECT_NE(dynamic_cast<jwt::AuthorizationRequestClaims*>(
+                  jwt::decode(readFixture2("auth-request-server.jwt")).get()), nullptr);
+    EXPECT_EQ(jwt::decorateJWT(readFixture2("auth-request-server.jwt")).substr(0, 41),
+              "-----BEGIN NATS AUTHORIZATION_REQUEST JWT");
+}
+
+TEST(AuthorizationRequestTest, GoRichGoldenDecodesTypedAndRebuildsEqual) {
+    auto g = jwt::decodeAuthorizationRequestClaims(readFixture2("auth-request.jwt"));
+    ASSERT_TRUE(g->tls().has_value());
+    EXPECT_EQ(g->tls()->verifiedChains, (std::vector<std::vector<std::string>>{{"leaf", "root"}}));
+    EXPECT_EQ(g->server().tags, (std::vector<std::string>{"east", "prod"}));
+    EXPECT_EQ(g->requestNonce(), "nonce-1");
+    EXPECT_EQ(g->connectOptions().token, "tok");
+    EXPECT_EQ(g->clientInformation().mqttId, "m1");
+
+    // rebuild from scratch through the typed API; sign with a server key
+    auto skp = nkeys::CreateServer();
+    jwt::AuthorizationRequestClaims rq(g->subject());
+    rq.setName("req");
+    rq.setAudience("nats-authorization-request");
+    rq.setExpires(1800000000);
+    rq.server() = g->server();
+    rq.setUserNkey(g->userNkey());
+    rq.clientInformation() = g->clientInformation();
+    rq.connectOptions() = g->connectOptions();
+    rq.tls() = g->tls();
+    rq.setRequestNonce("nonce-1");
+    auto ours = rq.encode(skp->seedString());
+    EXPECT_EQ(natsObjectOf(ours), natsObjectOf(readFixture2("auth-request.jwt")));
+    auto dec = jwt::decodeAuthorizationRequestClaims(ours);
+    EXPECT_EQ(dec->issuer(), skp->publicString());
+    EXPECT_EQ(dec->audience(), "nats-authorization-request");
+    EXPECT_EQ(dec->expires(), 1800000000);
+    // re-encode of the decoded golden is wire-equal too
+    EXPECT_EQ(natsObjectOf(g->encode(skp->seedString())), natsObjectOf(readFixture2("auth-request.jwt")));
+}
+
+TEST(AuthorizationRequestTest, OmitemptyAndValidationMatchGo) {
+    auto skp = nkeys::CreateServer();
+    auto akp = nkeys::CreateAccount();
+    jwt::AuthorizationRequestClaims rq(akp->publicString());
+    // user_nkey is required and must be a user key
+    EXPECT_THROW((void)rq.encode(skp->seedString()), jwt::InvalidClaimsError);
+    rq.setUserNkey(akp->publicString());
+    EXPECT_THROW((void)rq.encode(skp->seedString()), jwt::InvalidClaimsError);
+    rq.setUserNkey(nkeys::CreateUser()->publicString());
+    auto nats = natsObjectOf(rq.encode(skp->seedString()));
+    // always-present objects; protocol never omitted; everything else omitted
+    EXPECT_EQ(nats.at("server_id"), (nlohmann::json{{"name", ""}, {"host", ""}, {"id", ""}}));
+    EXPECT_EQ(nats.at("client_info"), nlohmann::json::object());
+    EXPECT_EQ(nats.at("connect_opts"), (nlohmann::json{{"protocol", 0}}));
+    for (const char* absent : {"client_tls", "request_nonce"}) EXPECT_FALSE(nats.contains(absent)) << absent;
+    // only a SERVER key may issue a request
+    EXPECT_THROW((void)rq.encode(akp->seedString()), jwt::InvalidClaimsError);
+}
+
+TEST(AuthorizationResponseTest, GoGoldensDecodeTypedAndRebuildEqual) {
+    auto ok = jwt::decodeAuthorizationResponseClaims(readFixture2("auth-response.jwt"));
+    EXPECT_TRUE(nkeys::IsValidPublicUserKey(ok->subject()));
+    EXPECT_TRUE(nkeys::IsValidPublicServerKey(ok->audience()));
+    EXPECT_FALSE(ok->jwt().empty());
+    EXPECT_TRUE(ok->error().empty());
+    ASSERT_TRUE(ok->issuerAccount().has_value());
+    EXPECT_NE(ok->issuer(), *ok->issuerAccount());  // signed by a signing key
+    auto embedded = jwt::decodeUserClaims(ok->jwt());
+    EXPECT_EQ(embedded->subject(), ok->subject());
+
+    auto cskp = nkeys::CreateAccount();
+    jwt::AuthorizationResponseClaims rs(ok->subject());
+    rs.setAudience(ok->audience());
+    rs.setJwt(ok->jwt());
+    rs.setIssuerAccount(*ok->issuerAccount());
+    EXPECT_EQ(natsObjectOf(rs.encode(cskp->seedString())), natsObjectOf(readFixture2("auth-response.jwt")));
+
+    auto err = jwt::decodeAuthorizationResponseClaims(readFixture2("auth-response-err.jwt"));
+    EXPECT_EQ(err->error(), "bad credentials");
+    EXPECT_TRUE(err->jwt().empty());
+    EXPECT_FALSE(err->issuerAccount().has_value());
+    jwt::AuthorizationResponseClaims re(err->subject());
+    re.setAudience(err->audience());
+    re.setError("bad credentials");
+    EXPECT_EQ(natsObjectOf(re.encode(cskp->seedString())), natsObjectOf(readFixture2("auth-response-err.jwt")));
+    EXPECT_EQ(jwt::decorateJWT(readFixture2("auth-response-err.jwt")).substr(0, 42),
+              "-----BEGIN NATS AUTHORIZATION_RESPONSE JWT");
+}
+
+TEST(AuthorizationResponseTest, ValidationRulesMatchGo) {
+    auto ckp = nkeys::CreateAccount();
+    auto skp = nkeys::CreateServer();
+    auto ukp = nkeys::CreateUser();
+    // subject must be a user key
+    { jwt::AuthorizationResponseClaims r(ckp->publicString()); r.setAudience(skp->publicString()); r.setError("x");
+      EXPECT_THROW((void)r.encode(ckp->seedString()), jwt::InvalidClaimsError); }
+    // audience must be a server key (and is required)
+    { jwt::AuthorizationResponseClaims r(ukp->publicString()); r.setError("x");
+      EXPECT_THROW((void)r.encode(ckp->seedString()), jwt::InvalidClaimsError); }
+    { jwt::AuthorizationResponseClaims r(ukp->publicString()); r.setAudience(ckp->publicString()); r.setError("x");
+      EXPECT_THROW((void)r.encode(ckp->seedString()), jwt::InvalidClaimsError); }
+    // exactly one of jwt / error
+    { jwt::AuthorizationResponseClaims r(ukp->publicString()); r.setAudience(skp->publicString());
+      EXPECT_THROW((void)r.encode(ckp->seedString()), jwt::InvalidClaimsError); }
+    { jwt::AuthorizationResponseClaims r(ukp->publicString()); r.setAudience(skp->publicString());
+      r.setJwt("jwt"); r.setError("x");
+      EXPECT_THROW((void)r.encode(ckp->seedString()), jwt::InvalidClaimsError); }
+    // issuer_account must be an account key
+    { jwt::AuthorizationResponseClaims r(ukp->publicString()); r.setAudience(skp->publicString());
+      r.setJwt("jwt"); r.setIssuerAccount(ukp->publicString());
+      EXPECT_THROW((void)r.encode(ckp->seedString()), jwt::InvalidClaimsError); }
+    // only an ACCOUNT key may issue a response
+    { jwt::AuthorizationResponseClaims r(ukp->publicString()); r.setAudience(skp->publicString()); r.setJwt("jwt");
+      EXPECT_THROW((void)r.encode(skp->seedString()), jwt::InvalidClaimsError);
+      EXPECT_NO_THROW((void)r.encode(ckp->seedString())); }
+}
+
+TEST(AuthorizationResponseTest, ChainAgainstTheCalloutAccountUsesSigningKeysAndIssuerAccount) {
+    // the server's rule: response issuer is the account key, or one of its
+    // signing keys named via issuer_account
+    auto okp = nkeys::CreateOperator();
+    auto ckp = nkeys::CreateAccount();
+    auto cskp = nkeys::CreateAccount();
+    auto other = nkeys::CreateAccount();
+    jwt::AccountClaims cc(ckp->publicString());
+    cc.addSigningKey(cskp->publicString());
+    auto acc = jwt::decodeAccountClaims(cc.encode(okp->seedString()));
+    auto skp = nkeys::CreateServer();
+    auto mk = [&](const nkeys::KeyPair& signer, std::optional<std::string> issAcc) {
+        jwt::AuthorizationResponseClaims r(nkeys::CreateUser()->publicString());
+        r.setAudience(skp->publicString());
+        r.setError("x");
+        if (issAcc) r.setIssuerAccount(*issAcc);
+        return jwt::decodeAuthorizationResponseClaims(r.encode(signer.seedString()));
+    };
+    EXPECT_TRUE(jwt::validateIssuerChain(*mk(*ckp, std::nullopt), *acc).valid);
+    EXPECT_TRUE(jwt::validateIssuerChain(*mk(*cskp, ckp->publicString()), *acc).valid);
+    EXPECT_FALSE(jwt::validateIssuerChain(*mk(*other, std::nullopt), *acc).valid);
+    EXPECT_FALSE(jwt::validateIssuerChain(*mk(*cskp, other->publicString()), *acc).valid);
+}
+
+TEST(AuthorizationClaimsTest, TamperedTokensAreRefused) {
+    for (const char* fx : {"auth-request.jwt", "auth-response.jwt"}) {
+        auto token = readFixture2(fx);
+        auto dot = token.find('.');
+        // flip a payload character between two alphabet members
+        auto pos = token.find_first_of("AB", dot + 1);
+        token[pos] = token[pos] == 'A' ? 'B' : 'A';
+        EXPECT_THROW((void)jwt::decode(token), jwt::Error) << fx;
+    }
 }

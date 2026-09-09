@@ -91,6 +91,25 @@ struct Import {
     bool allowTrace = false;    ///< streams only (imports)
 };
 
+/// Wildcard for ExternalAuthorization::allowedAccounts — the callout may
+/// place users in ANY account (Go: jwt.AnyAccount). Must then be the only entry.
+inline constexpr const char* AnyAccount = "*";
+
+/// Auth-callout configuration of an account (Go: ExternalAuthorization).
+/// When authUsers is non-empty, nats-server delegates authentication of
+/// every other user connecting into this account to the callout service
+/// (which itself connects as one of authUsers). allowedAccounts lists the
+/// accounts the service may place clients into (or {AnyAccount}); xkey is
+/// the service's x25519 public key when requests must be encrypted.
+struct ExternalAuthorization {
+    std::vector<std::string> authUsers;        ///< user public keys running the callout
+    std::vector<std::string> allowedAccounts;  ///< account public keys, or {AnyAccount}
+    std::string xkey;                          ///< curve ("X…") public key, optional
+
+    [[nodiscard]] bool isEnabled() const { return !authUsers.empty(); }
+    bool operator==(const ExternalAuthorization&) const = default;
+};
+
 /// Account-level claims (middle of trust hierarchy)
 class AccountClaims : public Claims {
 public:
@@ -135,6 +154,14 @@ public:
     /// Weighted subject mappings: from-subject → weighted destinations.
     [[nodiscard]] std::map<std::string, std::vector<WeightedMapping>>& mappings();
     [[nodiscard]] const std::map<std::string, std::vector<WeightedMapping>>& mappings() const;
+
+    /// Auth callout config — mutate in place (Go: Account.Authorization).
+    /// Always on the wire ({} when unset), like Go.
+    [[nodiscard]] ExternalAuthorization& authorization();
+    [[nodiscard]] const ExternalAuthorization& authorization() const;
+    /// Adds callout service users (Go: EnableExternalAuthorization).
+    void enableExternalAuthorization(const std::vector<std::string>& userPublicKeys);
+    [[nodiscard]] bool hasExternalAuthorization() const;
 
     /// Revokes every JWT for pubKey (or RevokeAll) issued at/before NOW.
     void revoke(const std::string& pubKey);

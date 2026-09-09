@@ -28,7 +28,15 @@
 #      allowed_connection_types=[WEBSOCKET] is refused on a plain TCP
 #      connection (client sees "Authorization Violation", the server logs
 #      "authentication error"); the unrestricted user connects
-#  10. negative control: the same connection WITHOUT creds is refused
+#  10. AUTH CALLOUT: account C delegates authentication to a service that
+#      is `nats reply` shelling out to `cpp_driver authcallout` per request
+#      (inside the toolbox image, see Dockerfile). A client presenting the
+#      C++-minted sentinel "alice" is admitted INTO ACCOUNT A by a
+#      C++-minted authorization response (signed by C's signing key, user
+#      JWT issued by A's signing key) and round-trips with A's responder;
+#      sentinel "mallory" is refused by the service; with the service down,
+#      alice is refused too (the server defers to the callout)
+#  11. negative control: the same connection WITHOUT creds is refused
 #      (proves the server is actually enforcing the operator-mode auth our
 #      chain is supposed to satisfy — without this, check 2 could pass
 #      against an open server)
@@ -43,12 +51,15 @@ CPP="$BUILD_DIR/cpp_driver"
 
 NATS_IMG=nats:2.10-alpine
 BOX_IMG=natsio/nats-box:0.14.5
+TOOLBOX_IMG=natsjwt-e2e-toolbox
 NET="natsjwt-e2e-$$"
 SRV="natsjwt-server-$$"
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO=$(CDPATH= cd -- "$HERE/../.." && pwd)
 
 WORK=$(mktemp -d)
 cleanup() {
-    docker rm -f "$SRV" "$SRV-resp" "$SRV-hold" "$SRV-rev" "$SRV-billing" >/dev/null 2>&1 || true
+    docker rm -f "$SRV" "$SRV-resp" "$SRV-hold" "$SRV-rev" "$SRV-billing" "$SRV-callout" >/dev/null 2>&1 || true
     docker network rm "$NET" >/dev/null 2>&1 || true
     rm -rf "$WORK"
 }
@@ -58,9 +69,12 @@ pass=0
 check() { pass=$((pass+1)); echo "  ok $pass: $1"; }
 fail() { echo "  FAIL: $1" >&2; exit 1; }
 
+echo "e2e-server: building the toolbox image (Linux cpp_driver + nats CLI) for the callout service"
+docker build -q -f "$HERE/Dockerfile" -t "$TOOLBOX_IMG" "$REPO" >/dev/null || fail "toolbox image build failed"
+
 echo "e2e-server: minting the README trust chain"
 "$CPP" bootstrap "$WORK" >/dev/null
-chmod 644 "$WORK"/u.creds "$WORK"/r.creds "$WORK"/s.creds "$WORK"/l.creds "$WORK"/x.creds "$WORK"/sys.creds "$WORK"/w.creds "$WORK"/resolver.conf "$WORK"/resolver-revoked.conf
+chmod 644 "$WORK"/*.creds "$WORK"/*.pub "$WORK"/*.seed "$WORK"/resolver.conf "$WORK"/resolver-revoked.conf
 
 docker network create "$NET" >/dev/null
 docker run -d --name "$SRV" --network "$NET" \
@@ -210,7 +224,42 @@ docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
     || fail "unrestricted user could not connect over the same path"
 check "CONNECTION TYPE enforced: WEBSOCKET-only user refused over plain TCP"
 
-# 10 ── negative control: no creds → refused
+# 10 ── AUTH CALLOUT: the service is `nats reply` (toolbox image) shelling
+# out to cpp_driver per request — every decision below is a C++-minted
+# authorization response answering a nats-server-minted request
+docker rm -f "$SRV-callout" >/dev/null 2>&1 || true
+docker run -d --name "$SRV-callout" --network "$NET" -v "$WORK":/w:ro "$TOOLBOX_IMG" \
+    nats --server nats://"$SRV":4222 --creds /w/callout.creds \
+    reply '$SYS.REQ.USER.AUTH' --command "cpp_driver authcallout /w" >/dev/null
+docker rm -f "$SRV-resp" >/dev/null 2>&1 || true
+docker run -d --name "$SRV-resp" --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" sh -c "
+    nats --server nats://$SRV:4222 --creds /w/u.creds reply demo.svc pong --count 4 &
+    sleep 40" >/dev/null
+sleep 2
+# alice: sentinel of C, admitted into A by the callout → reaches A's responder
+out=$(docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+    nats --server nats://"$SRV":4222 --creds /w/alice.creds request demo.svc ping --timeout 5s 2>&1 || true)
+printf '%s' "$out" | grep -q "pong" || {
+    docker logs "$SRV-callout" 2>&1 | tail -5 >&2
+    docker logs "$SRV" 2>&1 | grep -i "callout\|violation" | tail -5 >&2
+    fail "alice was not admitted into A via the callout: $out"; }
+# mallory: a perfectly valid sentinel of C — refused by the SERVICE's decision
+if docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+        nats --server nats://"$SRV":4222 --creds /w/mallory.creds rtt >/dev/null 2>&1; then
+    fail "mallory was admitted — the callout's error response was not honored"
+fi
+# the server quotes the service's error text — our C++-minted response's `error`
+docker logs "$SRV" 2>&1 | grep -q 'Auth callout service returned an error: sentinel "mallory" is not authorized' \
+    || fail "server log lacks the callout-error evidence with our error text"
+# service down: alice's sentinel alone admits nothing — the server defers to the callout
+docker rm -f "$SRV-callout" "$SRV-resp" >/dev/null 2>&1 || true
+if docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+        nats --server nats://"$SRV":4222 --creds /w/alice.creds rtt >/dev/null 2>&1; then
+    fail "alice was admitted with the callout service DOWN"
+fi
+check "AUTH CALLOUT: C++-minted response admits alice into A, refuses mallory; no service → nobody"
+
+# 11 ── negative control: no creds → refused
 if docker run --rm --network "$NET" "$BOX_IMG" \
         nats --server nats://"$SRV":4222 rtt >/dev/null 2>&1; then
     fail "server accepted a connection WITHOUT credentials — auth not enforced"

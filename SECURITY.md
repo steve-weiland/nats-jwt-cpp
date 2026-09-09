@@ -70,6 +70,22 @@ cannot:
   interface signs whatever it is asked to; the callback's own exceptions
   propagate unwrapped so its failure modes stay visible.
 
+### Auth Callout
+
+`decodeAuthorizationRequestClaims` is authenticated like every other decode:
+the request must verify against the SERVER key it names. That proves the
+request came from *a* server holding that key — a callout service must still
+check that it is addressed to it (`audience() == AuthRequestAudience`,
+`subject()` == its own account) and, when it authorizes on the client's
+sentinel credential, decode `connectOptions().jwt` (authenticated) rather
+than trusting `clientInformation()` strings. On the response side the library
+enforces the server's structural rules at encode (sub = a user key, aud = a
+server key, exactly one of jwt/error, issuer_account an account key, account
+issuer); binding the response to the *right* request — `sub` = the request's
+`userNkey()`, `aud` = the request's `server().id` — is the service's job, and
+nats-server refuses anything else. xkey-encrypted callout traffic is not
+implemented.
+
 ### Memory Security
 
 **Sensitive Data Handling**

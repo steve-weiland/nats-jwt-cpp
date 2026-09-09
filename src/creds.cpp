@@ -40,6 +40,10 @@ std::string decorateJWT(const std::string& jwt) {
         kind = "ACCOUNT";
     } else if (dynamic_cast<const ActivationClaims*>(claims.get())) {
         kind = "ACTIVATION";
+    } else if (dynamic_cast<const AuthorizationRequestClaims*>(claims.get())) {
+        kind = "AUTHORIZATION_REQUEST";   // Go: strings.ToUpper(claim type)
+    } else if (dynamic_cast<const AuthorizationResponseClaims*>(claims.get())) {
+        kind = "AUTHORIZATION_RESPONSE";
     } else {
         kind = "USER";
     }

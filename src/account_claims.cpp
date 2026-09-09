@@ -218,6 +218,51 @@ namespace {
 
     // Go's Export.Validate / Import.Validate — enforced at encode (Go's are
     // advisory), matching the rest of this port.
+    // Go's ExternalAuthorization.Validate, verbatim rules.
+    void validateExternalAuthorization(const ExternalAuthorization& a) {
+        if (!a.allowedAccounts.empty() && a.authUsers.empty()) {
+            throw InvalidClaimsError(
+                "External authorization cannot have accounts without users specified");
+        }
+        for (const auto& u : a.authUsers) {
+            if (!nkeys::IsValidPublicUserKey(u)) {
+                throw InvalidClaimsError("AuthUser \"" + u + "\" is not a valid user public key");
+            }
+        }
+        for (const auto& acc : a.allowedAccounts) {
+            if (acc == AnyAccount) {
+                if (a.allowedAccounts.size() > 1) {
+                    throw InvalidClaimsError(
+                        std::string("AllowedAccounts can only be a list of accounts or \"") +
+                        AnyAccount + "\"");
+                }
+            } else if (!nkeys::IsValidPublicAccountKey(acc)) {
+                throw InvalidClaimsError("Account \"" + acc + "\" is not a valid account public key");
+            }
+        }
+        if (!a.xkey.empty() && !nkeys::IsValidPublicCurveKey(a.xkey)) {
+            throw InvalidClaimsError("XKey \"" + a.xkey + "\" is not a valid public xkey");
+        }
+    }
+
+    json externalAuthorizationToJson(const ExternalAuthorization& a) {
+        json o = json::object();  // Go: a struct field, never omitted
+        if (!a.authUsers.empty()) o["auth_users"] = a.authUsers;
+        if (!a.allowedAccounts.empty()) o["allowed_accounts"] = a.allowedAccounts;
+        if (!a.xkey.empty()) o["xkey"] = a.xkey;
+        return o;
+    }
+
+    ExternalAuthorization externalAuthorizationFromJson(const json& j) {
+        ExternalAuthorization a;
+        if (j.contains("auth_users") && j["auth_users"].is_array())
+            a.authUsers = j["auth_users"].get<std::vector<std::string>>();
+        if (j.contains("allowed_accounts") && j["allowed_accounts"].is_array())
+            a.allowedAccounts = j["allowed_accounts"].get<std::vector<std::string>>();
+        a.xkey = j.value("xkey", "");
+        return a;
+    }
+
     void validateExportsImports(const std::vector<Export>& exports,
                                 const std::vector<Import>& imports) {
         for (const auto& e : exports) {
@@ -314,6 +359,7 @@ public:
     std::vector<Export> exports_;
     std::vector<Import> imports_;
     std::map<std::string, std::int64_t> revocations_;
+    ExternalAuthorization authorization_;
     std::string description_;
     std::string infoURL_;
     std::string subject_;
@@ -411,6 +457,15 @@ void AccountClaims::setDescription(const std::string& description) {
 }
 std::string AccountClaims::description() const { return impl_->description_; }
 void AccountClaims::setInfoURL(const std::string& url) { impl_->infoURL_ = url; }
+ExternalAuthorization& AccountClaims::authorization() { return impl_->authorization_; }
+const ExternalAuthorization& AccountClaims::authorization() const { return impl_->authorization_; }
+void AccountClaims::enableExternalAuthorization(const std::vector<std::string>& userPublicKeys) {
+    for (const auto& u : userPublicKeys) {
+        auto& users = impl_->authorization_.authUsers;
+        if (std::find(users.begin(), users.end(), u) == users.end()) users.push_back(u);
+    }
+}
+bool AccountClaims::hasExternalAuthorization() const { return impl_->authorization_.isEnabled(); }
 std::string AccountClaims::infoURL() const { return impl_->infoURL_; }
 
 std::string AccountClaims::encode(const std::string& seed) const {
@@ -457,6 +512,7 @@ std::string AccountClaims::encodeWithSigner(const std::string& issuerPublicKey,
     // overwrite the fields this port manages.
     validateAccountConfig(impl_->limits_, impl_->mappings_);
     validateExportsImports(impl_->exports_, impl_->imports_);
+    validateExternalAuthorization(impl_->authorization_);
 
     json nats_claims = impl_->natsRaw_;
     nats_claims["limits"] = accountLimitsToJson(impl_->limits_);
@@ -495,6 +551,7 @@ std::string AccountClaims::encodeWithSigner(const std::string& issuerPublicKey,
     }
     if (!impl_->revocations_.empty()) nats_claims["revocations"] = impl_->revocations_;
     else nats_claims.erase("revocations");
+    nats_claims["authorization"] = externalAuthorizationToJson(impl_->authorization_);
     if (!impl_->description_.empty()) nats_claims["description"] = impl_->description_;
     else nats_claims.erase("description");
     if (!impl_->infoURL_.empty()) nats_claims["info_url"] = impl_->infoURL_;
@@ -652,6 +709,9 @@ std::unique_ptr<AccountClaims> decodeAccountClaims(const std::string& jwt) {
         for (const auto& [key, ts] : nats["revocations"].items()) {
             claims->impl_->revocations_[key] = ts.get<std::int64_t>();
         }
+    }
+    if (nats.contains("authorization") && nats["authorization"].is_object()) {
+        claims->impl_->authorization_ = externalAuthorizationFromJson(nats["authorization"]);
     }
     claims->impl_->description_ = nats.value("description", "");
     claims->impl_->infoURL_ = nats.value("info_url", "");

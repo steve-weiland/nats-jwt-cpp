@@ -270,6 +270,84 @@ func main() {
 		must(os.WriteFile(dir+"/scoped-user.jwt", []byte(userJWT), 0600))
 		must(os.WriteFile(dir+"/scoped-user.apub", []byte(apk), 0600))
 		fmt.Println("OK")
+	case "genauth": // dir → auth-callout goldens: account with authorization, a rich request, responses (jwt / error)
+		dir := os.Args[2]
+		okp, _ := nkeys.CreateOperator()
+		ckp, _ := nkeys.CreateAccount()
+		cpk, _ := ckp.PublicKey()
+		cskp, _ := nkeys.CreateAccount()
+		cspk, _ := cskp.PublicKey()
+		u1, _ := nkeys.CreateUser()
+		u1pk, _ := u1.PublicKey()
+		u2, _ := nkeys.CreateUser()
+		u2pk, _ := u2.PublicKey()
+		a1, _ := nkeys.CreateAccount()
+		a1pk, _ := a1.PublicKey()
+		xkp, _ := nkeys.CreateCurveKeys()
+		xpk, _ := xkp.PublicKey()
+		cc := jwt.NewAccountClaims(cpk)
+		cc.Name = "C"
+		cc.SigningKeys.Add(cspk)
+		cc.Authorization.AuthUsers.Add(u1pk, u2pk)
+		cc.Authorization.AllowedAccounts.Add(a1pk)
+		cc.Authorization.XKey = xpk
+		accJWT, err := cc.Encode(okp)
+		must(err)
+
+		skp, _ := nkeys.CreateServer()
+		spk, _ := skp.PublicKey()
+		ukp, _ := nkeys.CreateUser()
+		upk, _ := ukp.PublicKey()
+		rq := jwt.NewAuthorizationRequestClaims(cpk)
+		rq.Name = "req"
+		rq.Audience = "nats-authorization-request"
+		rq.Expires = 1800000000
+		rq.Server = jwt.ServerID{Name: "srv-1", Host: "10.0.0.7", ID: spk, Version: "2.10.29", Cluster: "c1",
+			Tags: jwt.TagList{"east", "prod"}, XKey: xpk}
+		rq.UserNkey = upk
+		rq.ClientInformation = jwt.ClientInformation{Host: "172.17.0.1", ID: 9, User: "alice", Name: "cli",
+			Tags: jwt.TagList{"t1"}, NameTag: "sentinel", Kind: "Client", Type: "nats", MQTT: "m1", Nonce: "abc"}
+		rq.ConnectOptions = jwt.ConnectOptions{JWT: "eyJ.x.y", Nkey: upk, SignedNonce: "sig", Token: "tok",
+			Username: "alice", Password: "secret", Name: "cli", Lang: "go", Version: "1.45.0", Protocol: 1}
+		rq.TLS = &jwt.ClientTLS{Version: "1.3", Cipher: "TLS_AES_128_GCM_SHA256", Certs: jwt.StringList{"cert1"},
+			VerifiedChains: []jwt.StringList{{"leaf", "root"}}}
+		rq.RequestNonce = "nonce-1"
+		reqJWT, err := rq.Encode(skp)
+		must(err)
+
+		uc := jwt.NewUserClaims(upk)
+		uc.Name = "alice"
+		userJWT, err := uc.Encode(a1)
+		must(err)
+		rs := jwt.NewAuthorizationResponseClaims(upk)
+		rs.Audience = spk
+		rs.Jwt = userJWT
+		rs.IssuerAccount = cpk
+		respJWT, err := rs.Encode(cskp)
+		must(err)
+		re := jwt.NewAuthorizationResponseClaims(upk)
+		re.Audience = spk
+		re.Error = "bad credentials"
+		errJWT, err := re.Encode(ckp)
+		must(err)
+		for name, content := range map[string]string{"acc-auth.jwt": accJWT, "auth-request.jwt": reqJWT,
+			"auth-response.jwt": respJWT, "auth-response-err.jwt": errJWT} {
+			must(os.WriteFile(dir+"/"+name, []byte(content), 0600))
+		}
+		fmt.Println("OK")
+	case "validate": // jwt file → Decode + Validate; prints VALID or the issues
+		data, err := os.ReadFile(os.Args[2])
+		must(err)
+		c, err := jwt.Decode(strings.TrimSpace(string(data)))
+		must(err)
+		vr := jwt.CreateValidationResults()
+		c.Validate(vr)
+		for _, i := range vr.Issues {
+			if i.Blocking || !i.TimeCheck {
+				fmt.Println("ISSUE:", i.Description)
+			}
+		}
+		fmt.Println("type=" + string(c.ClaimType()))
 	case "djwt": // jwt file → DecorateJWT output (armored by claim type)
 		data, err := os.ReadFile(os.Args[2])
 		must(err)

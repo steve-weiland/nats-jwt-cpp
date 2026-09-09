@@ -6,6 +6,14 @@
 //   encode <dir>              writes op/acc/user.jwt + u.creds (direct issuance)
 //   encode-signer <dir>       the same files minted through encodeWithSigner —
 //                             an external-signer callback holds the keys
+//   genauth <dir>             auth-callout artifacts: account with
+//                             authorization config, a server-signed request,
+//                             responses (jwt via signing key / error)
+//   authcallout <dir>         the e2e's callout SERVICE body: reads the
+//                             request JWT from $NATS_REQUEST_BODY (nats reply
+//                             --command), admits sentinel "alice" into account
+//                             A, refuses everyone else; prints ONLY the
+//                             response JWT (the CLI replies with combined output)
 //   richuser <dir>            user token exercising the full typed
 //                             permissions/limits surface (fix-plan #1+#2)
 //   bootstrap <dir>           the Go README flow, verbatim: operator with a
@@ -17,6 +25,7 @@
 #include <jwt/jwt.hpp>
 #include <nkeys/nkeys.hpp>
 #include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -35,7 +44,11 @@ int main([[maybe_unused]] int argc, char** argv) try {
         std::string type = argv[2], tok = slurp(argv[3]);
         if (type == "operator") { auto c = jwt::decodeOperatorClaims(tok); std::cout << "CPP-DECODE-OK sub=" << c->subject() << "\n"; }
         else if (type == "account") { auto c = jwt::decodeAccountClaims(tok); std::cout << "CPP-DECODE-OK sub=" << c->subject() << "\n"; }
-        else { auto c = jwt::decodeUserClaims(tok); std::cout << "CPP-DECODE-OK sub=" << c->subject() << "\n"; }
+        else if (type == "activation") { auto c = jwt::decodeActivationClaims(tok); std::cout << "CPP-DECODE-OK sub=" << c->subject() << "\n"; }
+        else if (type == "authorization_request") { auto c = jwt::decodeAuthorizationRequestClaims(tok); std::cout << "CPP-DECODE-OK sub=" << c->subject() << "\n"; }
+        else if (type == "authorization_response") { auto c = jwt::decodeAuthorizationResponseClaims(tok); std::cout << "CPP-DECODE-OK sub=" << c->subject() << "\n"; }
+        else if (type == "user") { auto c = jwt::decodeUserClaims(tok); std::cout << "CPP-DECODE-OK sub=" << c->subject() << "\n"; }
+        else { std::cerr << "ERR: unknown claim type " << type << "\n"; return 2; }
     } else if (mode == "verify") {
         std::cout << (jwt::verify(slurp(argv[2])) ? "CPP-VERIFY-OK" : "CPP-VERIFY-FAIL") << "\n";
     } else if (mode == "chain") {
@@ -180,6 +193,37 @@ int main([[maybe_unused]] int argc, char** argv) try {
         std::string revokedAccJwt = received->encode(oskp->seedString());
         received->clearRevocation(rkp->publicString());  // main conf stays clean
 
+        // AUTH CALLOUT: account C delegates authentication to a service that
+        // connects as C's auth_user; it may place clients into A
+        // (allowed_accounts). Clients present a SENTINEL credential — a user
+        // of C — so the server routes them to C's callout (measured: operator
+        // mode enters the callout only for clients carrying a user JWT of an
+        // external-auth account). The service (cpp_driver authcallout) admits
+        // sentinel "alice" into A and refuses "mallory".
+        auto ckp = nkeys::CreateAccount();
+        auto cskp = nkeys::CreateAccount();
+        auto calloutUser = nkeys::CreateUser();
+        jwt::AccountClaims cc(ckp->publicString());
+        cc.setName("C");
+        cc.addSigningKey(cskp->publicString());
+        cc.enableExternalAuthorization({calloutUser->publicString()});
+        cc.authorization().allowedAccounts = {akp->publicString()};
+        std::string calloutAccJwt = cc.encode(oskp->seedString());
+        jwt::UserClaims cuc(calloutUser->publicString());
+        cuc.setName("callout-service");
+        std::string calloutCreds =
+            jwt::formatUserConfig(cuc.encode(ckp->seedString()), calloutUser->seedString());
+        auto sentinel = [&](const std::string& name) {
+            auto kp = nkeys::CreateUser();
+            jwt::UserClaims su(kp->publicString());
+            su.setName(name);
+            su.permissions().pub.deny = {">"};  // the callout's grant replaces these anyway
+            su.permissions().sub.deny = {">"};
+            return jwt::formatUserConfig(su.encode(ckp->seedString()), kp->seedString());
+        };
+        std::string aliceCreds = sentinel("alice");
+        std::string malloryCreds = sentinel("mallory");
+
         // memory-resolver config, the Go README's resolver.conf
         std::string resolver = "operator: " + opJwt + "\n\n" +
                                "resolver: MEMORY\n" +
@@ -187,6 +231,7 @@ int main([[maybe_unused]] int argc, char** argv) try {
                                "\t" + akp->publicString() + ": " + accJwt + "\n" +
                                "\t" + lkp->publicString() + ": " + limitedAccJwt + "\n" +
                                "\t" + xkp->publicString() + ": " + exporterJwt + "\n" +
+                               "\t" + ckp->publicString() + ": " + calloutAccJwt + "\n" +
                                "\t" + syskp->publicString() + ": " + sysAccJwt + "\n" +
                                "}\n";
 
@@ -203,6 +248,11 @@ int main([[maybe_unused]] int argc, char** argv) try {
                  {"s.creds", scopedCreds}, {"l.creds", limitedCreds},
                  {"x.creds", exporterCreds}, {"sys.creds", sysCreds},
                  {"w.creds", wsOnlyCreds},
+                 {"callout.creds", calloutCreds}, {"alice.creds", aliceCreds},
+                 {"mallory.creds", malloryCreds},
+                 // what the callout SERVICE needs: C's and A's signing seeds
+                 {"c.pub", ckp->publicString()}, {"a.pub", akp->publicString()},
+                 {"c-sk.seed", cskp->seedString()}, {"a-sk.seed", askp->seedString()},
                  {"resolver.conf", resolver},
                  {"resolver-revoked.conf", revokedResolver}})
             std::ofstream(dir + "/" + n) << c;
@@ -231,6 +281,100 @@ int main([[maybe_unused]] int argc, char** argv) try {
         uc.allowedConnectionTypes() = {jwt::ConnectionType::Websocket, jwt::ConnectionType::Mqtt};
         std::ofstream(dir + "/rich-user.jwt") << uc.encode(akp->seedString());
         std::cout << "OK\n";
+    } else if (mode == "genauth") { // dir → C++-minted auth-callout artifacts for Go to decode + Validate
+        std::string dir = argv[2];
+        auto okp = nkeys::CreateOperator();
+        auto ckp = nkeys::CreateAccount();
+        auto cskp = nkeys::CreateAccount();
+        auto akp = nkeys::CreateAccount();
+        auto skp = nkeys::CreateServer();
+        auto ukp = nkeys::CreateUser();
+        jwt::AccountClaims cc(ckp->publicString());
+        cc.setName("C");
+        cc.addSigningKey(cskp->publicString());
+        cc.enableExternalAuthorization({nkeys::CreateUser()->publicString(),
+                                        nkeys::CreateUser()->publicString()});
+        cc.authorization().allowedAccounts = {akp->publicString()};
+        cc.authorization().xkey = nkeys::CreateCurveKeys()->publicString();
+        std::string accJwt = cc.encode(okp->seedString());
+
+        jwt::AuthorizationRequestClaims rq(ckp->publicString());
+        rq.setAudience(jwt::AuthRequestAudience);
+        rq.setExpires(std::chrono::duration_cast<std::chrono::seconds>(
+                          std::chrono::system_clock::now().time_since_epoch()).count() + 2);
+        rq.server() = jwt::ServerID{"srv-1", "10.0.0.7", skp->publicString(), "2.10.29", "c1", {"east"}, ""};
+        rq.setUserNkey(ukp->publicString());
+        rq.clientInformation().host = "172.17.0.1";
+        rq.clientInformation().id = 9;
+        rq.clientInformation().user = "alice";
+        rq.clientInformation().kind = "Client";
+        rq.clientInformation().type = "nats";
+        rq.connectOptions().username = "alice";
+        rq.connectOptions().password = "secret";
+        rq.connectOptions().lang = "cpp";
+        rq.connectOptions().protocol = 1;
+        rq.tls() = jwt::ClientTLS{"1.3", "TLS_AES_128_GCM_SHA256", {"cert1"}, {{"leaf", "root"}}};
+        rq.setRequestNonce("nonce-1");
+        std::string reqJwt = rq.encode(skp->seedString());
+
+        jwt::UserClaims uc(ukp->publicString());
+        uc.setName("alice");
+        std::string userJwt = uc.encode(akp->seedString());
+        jwt::AuthorizationResponseClaims rs(ukp->publicString());
+        rs.setAudience(skp->publicString());
+        rs.setJwt(userJwt);
+        rs.setIssuerAccount(ckp->publicString());
+        std::string respJwt = rs.encode(cskp->seedString());
+        jwt::AuthorizationResponseClaims re(ukp->publicString());
+        re.setAudience(skp->publicString());
+        re.setError("bad credentials");
+        std::string errJwt = re.encode(ckp->seedString());
+        for (auto& [n, c] : std::vector<std::pair<std::string, std::string>>{
+                 {"acc-auth.jwt", accJwt}, {"auth-request.jwt", reqJwt},
+                 {"auth-response.jwt", respJwt}, {"auth-response-err.jwt", errJwt}})
+            std::ofstream(dir + "/" + n) << c;
+        std::cout << "OK\n";
+    } else if (mode == "authcallout") { // dir → auth-callout service body (see header)
+        std::string dir = argv[2];
+        const char* body = std::getenv("NATS_REQUEST_BODY");
+        if (!body || !*body) { std::cerr << "ERR: no NATS_REQUEST_BODY\n"; return 1; }
+        // authenticated decode: the request must verify against the SERVER
+        // key it names, be addressed to callout requests, and be for account C
+        auto rq = jwt::decodeAuthorizationRequestClaims(body);
+        const std::string cPub = slurp((dir + "/c.pub").c_str());
+        const std::string aPub = slurp((dir + "/a.pub").c_str());
+        auto cskp = nkeys::FromSeed(slurp((dir + "/c-sk.seed").c_str()));
+        auto askp = nkeys::FromSeed(slurp((dir + "/a-sk.seed").c_str()));
+        jwt::AuthorizationResponseClaims rs(rq->userNkey());
+        rs.setAudience(rq->server().id);
+        rs.setIssuerAccount(cPub);  // signed by C's SIGNING key
+        std::string who;
+        if (rq->audience() != jwt::AuthRequestAudience || rq->subject() != cPub) {
+            rs.setError("request not addressed to this callout");
+        } else if (rq->connectOptions().jwt.empty()) {
+            rs.setError("no sentinel credential");
+        } else {
+            // the sentinel the client presented is itself an authenticated decode
+            auto sentinel = jwt::decodeUserClaims(rq->connectOptions().jwt);
+            who = sentinel->name().value_or("");
+            if (sentinel->issuer() != cPub || who != "alice") {
+                rs.setError("sentinel \"" + who + "\" is not authorized");
+            } else {
+                // admit alice into account A: a user JWT for the server's
+                // user_nkey, issued by A's SIGNING key (issuer_account = A)
+                jwt::UserClaims uc(rq->userNkey());
+                uc.setName(who);
+                uc.setIssuerAccount(aPub);
+                uc.permissions().pub.allow = {"demo.>"};
+                uc.permissions().sub.allow = {"_INBOX.>"};
+                uc.setExpires(rq->expires() + 3600);
+                rs.setJwt(uc.encode(askp->seedString()));
+            }
+        }
+        // ONLY the JWT, no newline, nothing on stderr: `nats reply --command`
+        // replies with the command's COMBINED output (measured: a stderr
+        // line made the server fail with "Illegal base64 data")
+        std::cout << rs.encode(cskp->seedString());
     } else if (mode == "encode" || mode == "encode-signer") {
         // dir → write op/acc/user jwts + creds, README-style (direct issuance);
         // encode-signer mints the same through encodeWithSigner, the keys held

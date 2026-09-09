@@ -7,6 +7,7 @@
 #include "jwt/operator_claims.hpp"
 #include "jwt/account_claims.hpp"
 #include "jwt/activation_claims.hpp"
+#include "jwt/authorization_claims.hpp"
 #include "jwt/user_claims.hpp"
 #include "jwt/validation.hpp"
 #include "jwt/creds.hpp"

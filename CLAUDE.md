@@ -81,7 +81,8 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
 ```
 
 - the real-server gate for anything touching claim content or creds:
-  `tests/e2e-server/run.sh <build-dir>` (docker) — a fully C++-minted chain
+  `tests/e2e-server/run.sh <build-dir>` (docker; builds the toolbox image
+  from `tests/e2e-server/Dockerfile` first, ~2 min cold) — a fully C++-minted chain
   (bootstrap mode: the Go README flow verbatim + resolver.conf) must
   authenticate against nats:2.10-alpine, with a no-creds negative control.
 
@@ -136,8 +137,23 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
 
 ## Known gaps
 
-Scope cuts are documented in the README (aud/tags, v1 reading,
-auth-callout, activation hashID). External signers are ported
+Scope cuts are documented in the README (aud/tags on legacy types, v1
+reading, activation hashID, xkey-encrypted callout traffic). Auth callout is
+ported — `ExternalAuthorization` on accounts (ALWAYS on the wire, `{}` when
+unset — Go never omits the struct), `AuthorizationRequestClaims` (issued by
+SERVER keys only; `aud` is the constant "nats-authorization-request") and
+`AuthorizationResponseClaims` (account key or signing key + issuer_account;
+`aud` REQUIRED = server ID, `sub` = the request's user_nkey). Measured on
+nats-server 2.10.29, operator mode: the callout fires only for clients that
+present a user JWT of the external-auth account (a "sentinel" credential —
+plain user/password alone gets "Authentication requires a user JWT"), the
+server needs a system account (it panics in newRespInbox without one), and
+the nats CLI DROPS `--creds` when `--user/--password` are also given, so the
+e2e authorizes on the sentinel's identity. The e2e's callout service is
+`nats reply --command` in a toolbox image (`tests/e2e-server/Dockerfile`:
+Linux cpp_driver + nats CLI) — the host driver cannot run inside nats-box.
+`aud` is typed on these two claim types only (group-6 work for the rest).
+External signers are ported
 (`encodeWithSigner`; the interop gate pushes signer-minted tokens through Go
 Decode). User permissions/limits ARE ported — real-server-enforced in CI
 (e2e check 3) — creds parse/decorate is ported (creds.hpp: parse trio

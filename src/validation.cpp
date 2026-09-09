@@ -131,11 +131,18 @@ ValidationResult validateIssuerChain(const Claims& child, const Claims& parent) 
         return ValidationResult::failure(oss.str());
     }
 
-    // A user issued by a signing key names its account via issuer_account —
-    // when present it must be THIS account, or the user belongs elsewhere.
-    if (const auto* user = dynamic_cast<const UserClaims*>(&child)) {
-        if (auto issuerAccount = user->issuerAccount();
-            issuerAccount && *issuerAccount != parentSubject) {
+    // A child issued by a signing key names its account via issuer_account —
+    // when present it must be THIS account, or the child belongs elsewhere.
+    // Users and auth-callout responses both carry it (the server applies the
+    // same rule to responses: issuer is the account key or a signing key).
+    {
+        std::optional<std::string> issuerAccount;
+        if (const auto* user = dynamic_cast<const UserClaims*>(&child)) {
+            issuerAccount = user->issuerAccount();
+        } else if (const auto* resp = dynamic_cast<const AuthorizationResponseClaims*>(&child)) {
+            issuerAccount = resp->issuerAccount();
+        }
+        if (issuerAccount && *issuerAccount != parentSubject) {
             std::ostringstream oss;
             oss << "issuer_account '" << *issuerAccount
                 << "' does not match the account subject '" << parentSubject << "'";
