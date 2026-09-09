@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.21)  # PROJECT_IS_TOP_LEVEL
 # Project
 # The VERSION is the single source of truth: package config version file,
 # pkg-config, and jwt++ --version all derive from it.
-project(nats-jwt-cpp VERSION 1.2.0 LANGUAGES CXX)
+project(nats-jwt-cpp VERSION 1.3.0 LANGUAGES CXX)
 
 # --- Options ---------------------------------------------------------------
 option(JWT_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
