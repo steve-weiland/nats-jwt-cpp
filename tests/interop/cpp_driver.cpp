@@ -4,6 +4,8 @@
 //   verify <file>             signature check via the embedded issuer
 //   chain <op> <acc> <user>   strict() chain validation
 //   encode <dir>              writes op/acc/user.jwt + u.creds (direct issuance)
+//   richuser <dir>            user token exercising the full typed
+//                             permissions/limits surface (fix-plan #1+#2)
 //   bootstrap <dir>           the Go README flow, verbatim: operator with a
 //                             signing key; account self-signed, then decoded
 //                             and re-signed BY the operator signing key; user
@@ -67,6 +69,18 @@ int main([[maybe_unused]] int argc, char** argv) try {
         std::string userJwt = uc.encode(askp->seedString());
         std::string creds = jwt::formatUserConfig(userJwt, ukp->seedString());
 
+        // a second, PERMISSION-RESTRICTED user: may only publish under
+        // demo.> (plus subscribe to inbox replies) — the e2e gate proves the
+        // server enforces these C++-minted permissions
+        auto rkp = nkeys::CreateUser();
+        jwt::UserClaims rc(rkp->publicString());
+        rc.setName("restricted");
+        rc.setIssuerAccount(akp->publicString());
+        rc.permissions().pub.allow = {"demo.>"};
+        rc.permissions().sub.allow = {"_INBOX.>"};
+        std::string restrictedJwt = rc.encode(askp->seedString());
+        std::string restrictedCreds = jwt::formatUserConfig(restrictedJwt, rkp->seedString());
+
         // memory-resolver config, the Go README's resolver.conf
         std::string resolver = "operator: " + opJwt + "\n\n" +
                                "resolver: MEMORY\n" +
@@ -76,8 +90,30 @@ int main([[maybe_unused]] int argc, char** argv) try {
 
         for (auto& [n, c] : std::vector<std::pair<std::string, std::string>>{
                  {"op.jwt", opJwt}, {"acc.jwt", accJwt}, {"user.jwt", userJwt},
-                 {"u.creds", creds}, {"resolver.conf", resolver}})
+                 {"u.creds", creds}, {"r.creds", restrictedCreds},
+                 {"resolver.conf", resolver}})
             std::ofstream(dir + "/" + n) << c;
+        std::cout << "OK\n";
+    } else if (mode == "richuser") { // dir → user token with full perms/limits
+        std::string dir = argv[2];
+        auto akp = nkeys::CreateAccount();
+        auto ukp = nkeys::CreateUser();
+        jwt::UserClaims uc(ukp->publicString());
+        uc.setName("rich");
+        auto& p = uc.permissions();
+        p.pub.allow = {"demo.>", "orders.*.created"};
+        p.pub.deny = {"demo.secret"};
+        p.sub.allow = {"demo.>", "jobs.* workers"};
+        p.sub.deny = {"demo.internal.>"};
+        p.resp = jwt::ResponsePermission{5, 2000000000LL};
+        auto& l = uc.limits();
+        l.subs = 100;
+        l.data = 1 << 20;
+        l.payload = 4096;
+        l.src = {"10.0.0.0/8", "192.168.1.0/24"};
+        l.times = {{"08:00:00", "17:00:00"}};
+        l.locale = "America/Los_Angeles";
+        std::ofstream(dir + "/rich-user.jwt") << uc.encode(akp->seedString());
         std::cout << "OK\n";
     } else if (mode == "encode") { // dir → write op/acc/user jwts + creds, README-style (direct issuance)
         std::string dir = argv[2];

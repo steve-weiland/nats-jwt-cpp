@@ -26,10 +26,13 @@ same armor regex real NATS clients use.
 
 This is a deliberate PARTIAL port — what NATS authentication needs, not the
 whole Go surface. Ported: the three claim types with name/expiry/signing-keys/
-issuer_account, encode/decode/verify, timing + chain validation, creds
-generation. NOT ported (by choice): user permissions (pub/sub allow/deny) and
-limits, account limits/imports/exports, activation claims, scoped signing
-keys, audience/tags, v1 token reading, creds parsing (nkeys-cpp provides
+issuer_account, **user permissions (pub/sub allow/deny, response permissions)
+and limits (subs/data/payload, src CIDRs, time windows)** — enforced against a
+real nats-server in CI — encode/decode/verify, timing + chain validation,
+creds generation. Un-ported fields survive decode→re-encode untouched. NOT
+ported (by choice): account limits/imports/exports beyond the defaults,
+activation claims, scoped signing keys, bearer/connection-type flags,
+audience/tags, v1 token reading, creds parsing (nkeys-cpp provides
 `ParseDecoratedJWT`/`ParseDecoratedUserNKey`).
 
 ## Quick Start
@@ -65,6 +68,9 @@ std::string acc_jwt = acc_claims.encode(operator_kp->seedString());
 // Create user JWT (signed by account)
 auto user_kp = nkeys::CreateUser();
 jwt::UserClaims user_claims(user_kp->publicString());
+user_claims.permissions().pub.allow = {"orders.>"};   // least-privilege, Go-style
+user_claims.permissions().sub.allow = {"orders.>", "_INBOX.>"};
+user_claims.limits().payload = 65536;
 std::string user_jwt = user_claims.encode(account_kp->seedString());
 
 // Decode and inspect — decode is AUTHENTICATED: the signature is verified

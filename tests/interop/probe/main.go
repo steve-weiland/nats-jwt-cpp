@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
@@ -62,6 +63,46 @@ func main() {
 			must(os.WriteFile(dir+"/"+name, []byte(content), 0600))
 		}
 		fmt.Println("OK")
+	case "genrichuser": // dir → account + user with full permissions/limits
+		dir := os.Args[2]
+		akp, _ := nkeys.CreateAccount()
+		apk, _ := akp.PublicKey()
+		ukp, _ := nkeys.CreateUser()
+		upk, _ := ukp.PublicKey()
+		uc := jwt.NewUserClaims(upk)
+		uc.Name = "rich"
+		uc.Permissions.Pub.Allow.Add("demo.>", "orders.*.created")
+		uc.Permissions.Pub.Deny.Add("demo.secret")
+		uc.Permissions.Sub.Allow.Add("demo.>", "jobs.* workers")
+		uc.Permissions.Sub.Deny.Add("demo.internal.>")
+		uc.Permissions.Resp = &jwt.ResponsePermission{MaxMsgs: 5, Expires: 2 * time.Second}
+		uc.Limits.Subs = 100
+		uc.Limits.Data = 1 << 20
+		uc.Limits.Payload = 4096
+		uc.Limits.Src.Add("10.0.0.0/8", "192.168.1.0/24")
+		uc.Limits.Times = []jwt.TimeRange{{Start: "08:00:00", End: "17:00:00"}}
+		uc.Limits.Locale = "America/Los_Angeles"
+		token, err := uc.Encode(akp)
+		must(err)
+		must(os.WriteFile(dir+"/rich-user.jwt", []byte(token), 0600))
+		must(os.WriteFile(dir+"/rich-user.apub", []byte(apk), 0600))
+		fmt.Println("OK")
+	case "userperms": // jwt file → typed permission/limit fields, one per line
+		data, err := os.ReadFile(os.Args[2])
+		must(err)
+		uc, err := jwt.DecodeUserClaims(strings.TrimSpace(string(data)))
+		must(err)
+		fmt.Printf("pub.allow=%v\n", uc.Permissions.Pub.Allow)
+		fmt.Printf("pub.deny=%v\n", uc.Permissions.Pub.Deny)
+		fmt.Printf("sub.allow=%v\n", uc.Permissions.Sub.Allow)
+		fmt.Printf("sub.deny=%v\n", uc.Permissions.Sub.Deny)
+		if uc.Permissions.Resp != nil {
+			fmt.Printf("resp=%d,%v\n", uc.Permissions.Resp.MaxMsgs, uc.Permissions.Resp.Expires)
+		} else {
+			fmt.Println("resp=nil")
+		}
+		fmt.Printf("subs=%d data=%d payload=%d\n", uc.Limits.Subs, uc.Limits.Data, uc.Limits.Payload)
+		fmt.Printf("src=%v times=%v locale=%s\n", uc.Limits.Src, uc.Limits.Times, uc.Limits.Locale)
 	case "decode": // jwt file → type + iss + sub (Decode = authenticated)
 		data, err := os.ReadFile(os.Args[2])
 		must(err)

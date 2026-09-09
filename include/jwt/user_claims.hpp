@@ -1,5 +1,6 @@
 #pragma once
 #include "jwt/claims.hpp"
+#include "jwt/permissions.hpp"
 #include <optional>
 
 namespace jwt {
@@ -26,6 +27,15 @@ public:
     void setIssuer(const std::string& issuerKey);
     void setIssuerAccount(const std::string& accountPublicKey);
     [[nodiscard]] std::optional<std::string> issuerAccount() const;
+
+    /// Pub/sub permissions — mutate in place, Go-style:
+    ///   claims.permissions().pub.allow = {"demo.>"};
+    [[nodiscard]] Permissions& permissions();
+    [[nodiscard]] const Permissions& permissions() const;
+
+    /// Limits (-1 = unlimited; 0 is omitted on the wire = denied by server).
+    [[nodiscard]] UserLimits& limits();
+    [[nodiscard]] const UserLimits& limits() const;
 
 private:
     friend std::unique_ptr<UserClaims> decodeUserClaims(const std::string&);

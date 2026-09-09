@@ -5,7 +5,7 @@
 #
 #   usage: tests/interop/run.sh <cmake-build-dir>
 #
-# Seven checks:
+# Eight checks:
 #   1. C++-minted operator/account/user JWTs pass Go's authenticated Decode
 #   2. C++-generated .creds parses via Go ParseDecoratedJWT (the armor regex
 #      every NATS client uses) and its JWT decodes
@@ -17,7 +17,9 @@
 #   5. a payload-tampered token is rejected by BOTH sides
 #   6. Go-minted already-expired token decodes in C++ (expiry is validity,
 #      not structure)
-#   7. round-trip: Go decodes a C++ user token, C++ decodes it back
+#   7. typed permissions/limits: a C++-minted rich user parses into Go's
+#      TYPED fields with the intended values (fix-plan #1+#2)
+#   8. round-trip: Go decodes a C++ user token, C++ decodes it back
 set -eu
 
 BUILD_DIR=${1:?usage: run.sh <cmake-build-dir>}
@@ -83,7 +85,25 @@ check "payload-tampered token rejected by BOTH sides"
     || fail "C++ could not decode a Go-minted expired token"
 check "Go-minted expired token decodes (expiry is validity, not structure)"
 
-# 7 ── round-trip sanity
+# 7 ── typed permissions/limits round trip: C++ mints the rich user, Go's
+# TYPED parser must see every field with the intended values
+mkdir -p "$TMP/rich"
+"$CPP" richuser "$TMP/rich" >/dev/null
+perms=$("$GO" userperms "$TMP/rich/rich-user.jwt")
+for expect in \
+    'pub.allow=[demo.> orders.*.created]' \
+    'pub.deny=[demo.secret]' \
+    'sub.allow=[demo.> jobs.* workers]' \
+    'resp=5,2s' \
+    'subs=100 data=1048576 payload=4096' \
+    'src=[10.0.0.0/8 192.168.1.0/24] times=[{08:00:00 17:00:00}] locale=America/Los_Angeles'
+do
+    printf '%s\n' "$perms" | grep -qF "$expect" \
+        || fail "Go's typed parse missing: $expect (got: $perms)"
+done
+check "C++ typed permissions/limits parse into Go's types with intended values"
+
+# 8 ── round-trip sanity
 "$GO" decode "$TMP/cpp/user.jwt" >/dev/null && "$CPP" decode user "$TMP/cpp/user.jwt" >/dev/null \
     || fail "round-trip decode failed"
 check "round-trip: both sides decode the same C++ user token"

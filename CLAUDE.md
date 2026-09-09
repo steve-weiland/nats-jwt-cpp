@@ -108,6 +108,13 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
   SHA-512/256, FIPS 180-4 §5.3.6.2, of the payload serialized jti-less,
   base32 no padding — Go's algorithm over OUR serialization, so values differ
   from Go's for the same logical claims by design).
+- `include/jwt/permissions.hpp` — typed user Permissions/Limits (Go's User
+  schema, ported completely): resp.ttl is NANOSECONDS on the wire; queue
+  subjects ("subj queue") legal only in sub; a 0 limit is OMITTED (server
+  treats absent as zero); src decodes from array OR comma string (Go
+  leniency). Divergence, documented: Go validates locale against the IANA
+  tzdb, we accept any string. Typed fields OWN their keys on encode (erased
+  when empty); everything untyped still rides natsRaw_.
 - `src/base64url.*` — RFC 4648 URL alphabet, no padding.
 - Claim JSON is nlohmann (alphabetical key order — irrelevant to Go, which
   ignores order); header is `{"typ":"JWT","alg":"ed25519-nkey"}`.
@@ -119,8 +126,10 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
 
 ## Known gaps
 
-Scope cuts are documented in the README (permissions/limits, imports/exports,
-activations, scoped signing keys, aud/tags, v1 reading, creds parsing).
+Scope cuts are documented in the README (account imports/exports/custom
+limits, activations, scoped signing keys, bearer/conn-type flags, aud/tags,
+v1 reading, creds parsing). User permissions/limits ARE ported —
+real-server-enforced in CI (e2e check 3).
 The library is consumable four ways (find_package(natsjwt) static/shared,
 pkg-config, add_subdirectory embed — all gated by `tests/packaging/test.sh`,
 which installs a real nkeys-cpp and thereby also exercises the system-nkeys

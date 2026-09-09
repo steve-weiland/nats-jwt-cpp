@@ -7,8 +7,121 @@
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <sstream>
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <arpa/inet.h>
 
 namespace jwt {
+
+namespace {
+
+    using json = nlohmann::json;
+
+    json permissionToJson(const Permission& p) {
+        json out = json::object();
+        if (!p.allow.empty()) out["allow"] = p.allow;
+        if (!p.deny.empty()) out["deny"] = p.deny;
+        return out;
+    }
+
+    Permission permissionFromJson(const json& j) {
+        Permission p;
+        if (j.contains("allow")) p.allow = j["allow"].get<std::vector<std::string>>();
+        if (j.contains("deny")) p.deny = j["deny"].get<std::vector<std::string>>();
+        return p;
+    }
+
+    // Go's checkPermission: "subject" or "subject queue"; queues only where
+    // permitted (subscriptions), never a third token.
+    void validatePermissionSubject(const std::string& entry, bool permitQueue) {
+        std::vector<std::string> tokens;
+        std::size_t pos = 0;
+        while (pos <= entry.size()) {
+            auto next = entry.find(' ', pos);
+            if (next == std::string::npos) {
+                tokens.push_back(entry.substr(pos));
+                break;
+            }
+            tokens.push_back(entry.substr(pos, next - pos));
+            pos = next + 1;
+        }
+        if (tokens.size() > 2) {
+            throw InvalidClaimsError("Permission subject \"" + entry +
+                                     "\" contains too many spaces");
+        }
+        if (tokens.size() == 2 && !permitQueue) {
+            throw InvalidClaimsError("Permission subject \"" + entry +
+                                     "\" is not allowed to contain queue");
+        }
+        for (const auto& t : tokens) {
+            if (t.empty()) {
+                throw InvalidClaimsError("Permission subject \"" + entry +
+                                         "\" contains an empty token");
+            }
+        }
+    }
+
+    void validatePermissions(const Permissions& p) {
+        for (const auto& s : p.sub.allow) validatePermissionSubject(s, true);
+        for (const auto& s : p.sub.deny) validatePermissionSubject(s, true);
+        for (const auto& s : p.pub.allow) validatePermissionSubject(s, false);
+        for (const auto& s : p.pub.deny) validatePermissionSubject(s, false);
+    }
+
+    // Go: net.ParseCIDR — require addr/prefix with a parseable v4/v6 address
+    // and an in-range prefix length.
+    void validateCidr(const std::string& cidr) {
+        auto slash = cidr.find('/');
+        bool ok = false;
+        if (slash != std::string::npos && slash > 0 && slash + 1 < cidr.size()) {
+            const std::string addr = cidr.substr(0, slash);
+            const std::string prefixStr = cidr.substr(slash + 1);
+            unsigned char buf[16];
+            int family = addr.find(':') != std::string::npos ? AF_INET6 : AF_INET;
+            if (inet_pton(family, addr.c_str(), buf) == 1 &&
+                !prefixStr.empty() &&
+                prefixStr.find_first_not_of("0123456789") == std::string::npos) {
+                const long prefix = std::strtol(prefixStr.c_str(), nullptr, 10);
+                ok = prefix >= 0 && prefix <= (family == AF_INET6 ? 128 : 32);
+            }
+        }
+        if (!ok) {
+            throw InvalidClaimsError("invalid cidr \"" + cidr + "\" in user src limits");
+        }
+    }
+
+    // Go: time.Parse("15:04:05", ...) — strict HH:MM:SS.
+    void validateTimeOfDay(const std::string& t, const char* which) {
+        bool ok = t.size() == 8 && t[2] == ':' && t[5] == ':';
+        if (ok) {
+            for (std::size_t i : {0u, 1u, 3u, 4u, 6u, 7u}) {
+                if (t[i] < '0' || t[i] > '9') { ok = false; break; }
+            }
+        }
+        if (ok) {
+            const int h = (t[0] - '0') * 10 + (t[1] - '0');
+            const int m = (t[3] - '0') * 10 + (t[4] - '0');
+            const int sec = (t[6] - '0') * 10 + (t[7] - '0');
+            ok = h <= 23 && m <= 59 && sec <= 59;
+        }
+        if (!ok) {
+            throw InvalidClaimsError(std::string(which) + " in time range is invalid \"" + t + "\"");
+        }
+    }
+
+    // Divergence from Go, documented: Go validates locale against the IANA
+    // tzdb (time.LoadLocation); portable C++ tzdb access is not reliable
+    // across our supported toolchains, so any non-empty string is accepted.
+    void validateLimits(const UserLimits& l) {
+        for (const auto& cidr : l.src) validateCidr(cidr);
+        for (const auto& tr : l.times) {
+            validateTimeOfDay(tr.start, "start");
+            validateTimeOfDay(tr.end, "end");
+        }
+    }
+
+} // namespace
 
 class UserClaims::Impl {
 public:
@@ -21,6 +134,8 @@ public:
         {"sub", nlohmann::json::object()},
         {"subs", -1}, {"data", -1}, {"payload", -1},
     };
+    Permissions permissions_;
+    UserLimits limits_;
     std::string subject_;
     std::string issuer_;
     std::optional<std::string> name_;
@@ -51,6 +166,10 @@ void UserClaims::setIssuerAccount(const std::string& accountPublicKey) {
 std::optional<std::string> UserClaims::issuerAccount() const {
     return impl_->issuerAccount_;
 }
+Permissions& UserClaims::permissions() { return impl_->permissions_; }
+const Permissions& UserClaims::permissions() const { return impl_->permissions_; }
+UserLimits& UserClaims::limits() { return impl_->limits_; }
+const UserLimits& UserClaims::limits() const { return impl_->limits_; }
 
 std::string UserClaims::encode(const std::string& seed) const {
     using namespace internal;
@@ -85,14 +204,44 @@ std::string UserClaims::encode(const std::string& seed) const {
         payload["exp"] = impl_->expires_;
     }
 
+    validatePermissions(impl_->permissions_);
+    validateLimits(impl_->limits_);
+
     // NATS-specific claims: start from the carried nats object, then
-    // overwrite the fields this port manages.
+    // overwrite every field this port manages (erasing keys whose typed
+    // value is empty — Go's omitempty; stale raw values must never leak).
     json nats_claims = impl_->natsRaw_;
     if (impl_->issuerAccount_) {
         nats_claims["issuer_account"] = *impl_->issuerAccount_;
     } else {
         nats_claims.erase("issuer_account");
     }
+    nats_claims["pub"] = permissionToJson(impl_->permissions_.pub);
+    nats_claims["sub"] = permissionToJson(impl_->permissions_.sub);
+    if (impl_->permissions_.resp) {
+        nats_claims["resp"] = {{"max", impl_->permissions_.resp->maxMsgs},
+                               {"ttl", impl_->permissions_.resp->ttlNanos}};
+    } else {
+        nats_claims.erase("resp");
+    }
+    for (auto [key, value] : {std::pair<const char*, std::int64_t>{"subs", impl_->limits_.subs},
+                              {"data", impl_->limits_.data},
+                              {"payload", impl_->limits_.payload}}) {
+        if (value != 0) nats_claims[key] = value; else nats_claims.erase(key);
+    }
+    if (!impl_->limits_.src.empty()) nats_claims["src"] = impl_->limits_.src;
+    else nats_claims.erase("src");
+    if (!impl_->limits_.times.empty()) {
+        json times = json::array();
+        for (const auto& tr : impl_->limits_.times) {
+            times.push_back({{"start", tr.start}, {"end", tr.end}});
+        }
+        nats_claims["times"] = times;
+    } else {
+        nats_claims.erase("times");
+    }
+    if (!impl_->limits_.locale.empty()) nats_claims["times_location"] = impl_->limits_.locale;
+    else nats_claims.erase("times_location");
     nats_claims["type"] = "user";
     nats_claims["version"] = JWT_VERSION;
     payload["nats"] = nats_claims;
@@ -211,6 +360,44 @@ std::unique_ptr<UserClaims> decodeUserClaims(const std::string& jwt) {
     // Create UserClaims object
     auto claims = std::make_unique<UserClaims>(subject);
     claims->impl_->natsRaw_ = nats;
+
+    // Typed permission/limit fields (fix-plan #1+#2)
+    auto& perms = claims->impl_->permissions_;
+    if (nats.contains("pub")) perms.pub = permissionFromJson(nats["pub"]);
+    if (nats.contains("sub")) perms.sub = permissionFromJson(nats["sub"]);
+    if (nats.contains("resp") && nats["resp"].is_object()) {
+        perms.resp = ResponsePermission{nats["resp"].value("max", 0),
+                                        nats["resp"].value("ttl", std::int64_t{0})};
+    }
+    auto& lims = claims->impl_->limits_;
+    lims.subs = nats.value("subs", std::int64_t{0});
+    lims.data = nats.value("data", std::int64_t{0});
+    lims.payload = nats.value("payload", std::int64_t{0});
+    if (nats.contains("src")) {
+        // Go's CIDRList accepts a JSON array or a comma-separated string
+        if (nats["src"].is_array()) {
+            lims.src = nats["src"].get<std::vector<std::string>>();
+        } else if (nats["src"].is_string()) {
+            std::string all = nats["src"].get<std::string>();
+            std::size_t pos = 0;
+            while (pos <= all.size()) {
+                auto next = all.find(',', pos);
+                std::string piece = all.substr(pos, next == std::string::npos
+                                                        ? std::string::npos : next - pos);
+                std::transform(piece.begin(), piece.end(), piece.begin(),
+                               [](unsigned char ch) { return std::tolower(ch); });
+                if (!piece.empty()) lims.src.push_back(piece);
+                if (next == std::string::npos) break;
+                pos = next + 1;
+            }
+        }
+    }
+    if (nats.contains("times") && nats["times"].is_array()) {
+        for (const auto& tr : nats["times"]) {
+            lims.times.push_back({tr.value("start", ""), tr.value("end", "")});
+        }
+    }
+    lims.locale = nats.value("times_location", "");
 
     // Populate required fields (direct access via friend declaration)
     claims->impl_->issuer_ = issuer;

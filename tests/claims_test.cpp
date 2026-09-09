@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "jwt/claims.hpp"
 #include "jwt/validation.hpp"
+#include "jwt/jwt_errors.hpp"
 #include "jwt/operator_claims.hpp"
 #include "jwt/account_claims.hpp"
 #include "jwt/user_claims.hpp"
@@ -456,4 +457,169 @@ TEST(ClaimsEdgeCaseTest, ManySigningKeys) {
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
+}
+
+// ============================================================================
+// User permissions + limits (fix-plan "not-ported" #1+#2) — Go's User schema,
+// ported completely and gated on Go-minted goldens. Wire facts measured:
+// resp = {"max","ttl"} with ttl in NANOSECONDS; queue subjects ("subj queue")
+// legal only in sub, max two tokens; src marshals as an array but Go's
+// decoder also accepts a comma string; empty lists are omitted (omitempty)
+// while pub/sub objects always serialize.
+// ============================================================================
+
+#include <nlohmann/json.hpp>
+#include "../src/base64url.hpp"
+#include <fstream>
+
+namespace {
+    std::string readFixture2(const std::string& name) {
+        std::ifstream f(std::string(JWT_TEST_FIXTURES_DIR "/") + name, std::ios::binary);
+        EXPECT_TRUE(f.is_open()) << "fixture " << name;
+        std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+        return s;
+    }
+    nlohmann::json natsObjectOf(const std::string& token) {
+        auto first = token.find('.');
+        auto second = token.find('.', first + 1);
+        auto bytes = jwt::internal::base64url_decode(
+            token.substr(first + 1, second - first - 1));
+        return nlohmann::json::parse(std::string(bytes.begin(), bytes.end())).at("nats");
+    }
+    // The rich claims from the Go probe's genrichuser, rebuilt via the C++ API.
+    void buildRichClaims(jwt::UserClaims& uc) {
+        uc.setName("rich");
+        auto& p = uc.permissions();
+        p.pub.allow = {"demo.>", "orders.*.created"};
+        p.pub.deny = {"demo.secret"};
+        p.sub.allow = {"demo.>", "jobs.* workers"};
+        p.sub.deny = {"demo.internal.>"};
+        p.resp = jwt::ResponsePermission{5, 2000000000LL};
+        auto& l = uc.limits();
+        l.subs = 100;
+        l.data = 1 << 20;
+        l.payload = 4096;
+        l.src = {"10.0.0.0/8", "192.168.1.0/24"};
+        l.times = {{"08:00:00", "17:00:00"}};
+        l.locale = "America/Los_Angeles";
+    }
+}
+
+TEST(UserPermissionsTest, DecodesGoRichUserIntoTypedFields) {
+    auto uc = jwt::decodeUserClaims(readFixture2("user-rich.jwt"));
+    const auto& p = uc->permissions();
+    EXPECT_EQ(p.pub.allow, (std::vector<std::string>{"demo.>", "orders.*.created"}));
+    EXPECT_EQ(p.pub.deny, (std::vector<std::string>{"demo.secret"}));
+    EXPECT_EQ(p.sub.allow, (std::vector<std::string>{"demo.>", "jobs.* workers"}));
+    EXPECT_EQ(p.sub.deny, (std::vector<std::string>{"demo.internal.>"}));
+    ASSERT_TRUE(p.resp.has_value());
+    EXPECT_EQ(p.resp->maxMsgs, 5);
+    EXPECT_EQ(p.resp->ttlNanos, 2000000000LL);  // 2s, Go time.Duration = nanos
+    const auto& l = uc->limits();
+    EXPECT_EQ(l.subs, 100);
+    EXPECT_EQ(l.data, 1 << 20);
+    EXPECT_EQ(l.payload, 4096);
+    EXPECT_EQ(l.src, (std::vector<std::string>{"10.0.0.0/8", "192.168.1.0/24"}));
+    ASSERT_EQ(l.times.size(), 1u);
+    EXPECT_EQ(l.times[0].start, "08:00:00");
+    EXPECT_EQ(l.times[0].end, "17:00:00");
+    EXPECT_EQ(l.locale, "America/Los_Angeles");
+}
+
+TEST(UserPermissionsTest, EncodeMatchesGoWireShapeExactly) {
+    // Build the same claims Go's genrichuser built; the entire nats object
+    // must equal the Go golden's (json equality is order-insensitive).
+    auto akp = nkeys::CreateAccount();
+    auto ukp = nkeys::CreateUser();
+    jwt::UserClaims uc(ukp->publicString());
+    buildRichClaims(uc);
+    auto ours = natsObjectOf(uc.encode(akp->seedString()));
+    auto golden = natsObjectOf(readFixture2("user-rich.jwt"));
+    EXPECT_EQ(ours, golden);
+}
+
+TEST(UserPermissionsTest, DefaultsAndOmitemptyMatchGo) {
+    auto akp = nkeys::CreateAccount();
+    auto ukp = nkeys::CreateUser();
+    jwt::UserClaims uc(ukp->publicString());
+    auto nats = natsObjectOf(uc.encode(akp->seedString()));
+    // fresh: empty pub/sub objects, -1 limits, and NO optional keys
+    EXPECT_EQ(nats.at("pub"), nlohmann::json::object());
+    EXPECT_EQ(nats.at("subs"), -1);
+    for (const char* absent : {"resp", "src", "times", "times_location"}) {
+        EXPECT_FALSE(nats.contains(absent)) << absent;
+    }
+    // Go's omitempty: a zero limit is OMITTED (absent means zero server-side)
+    uc.limits().subs = 0;
+    auto nats2 = natsObjectOf(uc.encode(akp->seedString()));
+    EXPECT_FALSE(nats2.contains("subs"));
+}
+
+TEST(UserPermissionsTest, ClearedFieldsAreOmittedOnReEncode) {
+    // decode the rich fixture, clear the denies, re-encode: the deny keys
+    // must vanish (typed fields own their keys; stale raw values must not
+    // leak through the carry-layer).
+    auto uc = jwt::decodeUserClaims(readFixture2("user-rich.jwt"));
+    uc->permissions().pub.deny.clear();
+    uc->permissions().sub.deny.clear();
+    uc->permissions().resp.reset();
+    auto akp = nkeys::CreateAccount();
+    auto nats = natsObjectOf(uc->encode(akp->seedString()));
+    EXPECT_FALSE(nats.at("pub").contains("deny"));
+    EXPECT_FALSE(nats.at("sub").contains("deny"));
+    EXPECT_FALSE(nats.contains("resp"));
+    EXPECT_EQ(nats.at("pub").at("allow"),
+              (std::vector<std::string>{"demo.>", "orders.*.created"}));
+}
+
+TEST(UserPermissionsTest, ValidationRulesMatchGo) {
+    auto akp = nkeys::CreateAccount();
+    auto ukp = nkeys::CreateUser();
+
+    // queue subjects are legal in sub...
+    jwt::UserClaims ok(ukp->publicString());
+    ok.permissions().sub.allow = {"jobs.* workers"};
+    EXPECT_NO_THROW((void)ok.encode(akp->seedString()));
+
+    // ...but not in pub
+    jwt::UserClaims badPub(ukp->publicString());
+    badPub.permissions().pub.allow = {"jobs.* workers"};
+    EXPECT_THROW((void)badPub.encode(akp->seedString()), jwt::InvalidClaimsError);
+
+    // three space-separated tokens: never valid
+    jwt::UserClaims tooMany(ukp->publicString());
+    tooMany.permissions().sub.allow = {"a b c"};
+    EXPECT_THROW((void)tooMany.encode(akp->seedString()), jwt::InvalidClaimsError);
+
+    // invalid CIDR
+    jwt::UserClaims badCidr(ukp->publicString());
+    badCidr.limits().src = {"not-a-cidr"};
+    EXPECT_THROW((void)badCidr.encode(akp->seedString()), jwt::InvalidClaimsError);
+
+    // malformed time range ("8:00" — Go requires 15:04:05 format)
+    jwt::UserClaims badTime(ukp->publicString());
+    badTime.limits().times = {{"8:00", "17:00:00"}};
+    EXPECT_THROW((void)badTime.encode(akp->seedString()), jwt::InvalidClaimsError);
+}
+
+TEST(UserPermissionsTest, SrcAcceptsCommaStringOnDecode) {
+    // Go's CIDRList unmarshals either a JSON array or a comma string; match.
+    auto akp = nkeys::CreateAccount();
+    auto ukp = nkeys::CreateUser();
+    std::string header = R"({"typ":"JWT","alg":"ed25519-nkey"})";
+    std::string payload = R"({"iat":1700000000,"iss":")" + akp->publicString() +
+        R"(","jti":"x","sub":")" + ukp->publicString() +
+        R"(","nats":{"src":"10.0.0.0/8,192.168.1.0/24","type":"user","version":2}})";
+    auto b64 = [](const std::string& s) {
+        std::span<const std::uint8_t> sp(
+            reinterpret_cast<const std::uint8_t*>(s.data()), s.size());
+        return jwt::internal::base64url_encode(sp);
+    };
+    std::string si = b64(header) + "." + b64(payload);
+    auto kp = nkeys::FromSeed(akp->seedString());
+    std::span<const std::uint8_t> sib(
+        reinterpret_cast<const std::uint8_t*>(si.data()), si.size());
+    auto uc = jwt::decodeUserClaims(si + "." + jwt::internal::base64url_encode(kp->sign(sib)));
+    EXPECT_EQ(uc->limits().src, (std::vector<std::string>{"10.0.0.0/8", "192.168.1.0/24"}));
 }

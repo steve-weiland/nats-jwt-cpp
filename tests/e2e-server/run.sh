@@ -9,7 +9,10 @@
 #
 #   1. starts nats-server (docker, pinned) with that resolver.conf
 #   2. positive: a request/reply round trip authenticated by u.creds
-#   3. negative control: the same connection WITHOUT creds is refused
+#   3. permission enforcement: a second, RESTRICTED user (pub allow demo.>
+#      only) minted by this library round-trips on demo.svc while its request
+#      to secret.svc is blocked by the server ("Permissions Violation" logged)
+#   4. negative control: the same connection WITHOUT creds is refused
 #      (proves the server is actually enforcing the operator-mode auth our
 #      chain is supposed to satisfy — without this, check 2 could pass
 #      against an open server)
@@ -29,7 +32,7 @@ SRV="natsjwt-server-$$"
 
 WORK=$(mktemp -d)
 cleanup() {
-    docker rm -f "$SRV" >/dev/null 2>&1 || true
+    docker rm -f "$SRV" "$SRV-resp" >/dev/null 2>&1 || true
     docker network rm "$NET" >/dev/null 2>&1 || true
     rm -rf "$WORK"
 }
@@ -41,7 +44,7 @@ fail() { echo "  FAIL: $1" >&2; exit 1; }
 
 echo "e2e-server: minting the README trust chain"
 "$CPP" bootstrap "$WORK" >/dev/null
-chmod 644 "$WORK"/u.creds "$WORK"/resolver.conf
+chmod 644 "$WORK"/u.creds "$WORK"/r.creds "$WORK"/resolver.conf
 
 docker network create "$NET" >/dev/null
 docker run -d --name "$SRV" --network "$NET" \
@@ -65,7 +68,32 @@ out=$(docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" sh -c "
 printf '%s' "$out" | grep -q "pong" || fail "request/reply round trip failed: $out"
 check "authenticated request/reply round trip (pub + sub permissions live)"
 
-# 3 ── negative control: no creds → refused
+# 3 ── C++-minted PERMISSIONS enforced: the restricted user (pub allow
+# demo.> only) round-trips on demo.svc but its request to secret.svc never
+# reaches the responder — the server blocks the publish
+docker rm -f "$SRV-resp" >/dev/null 2>&1 || true
+docker run -d --name "$SRV-resp" --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" sh -c "
+    nats --server nats://$SRV:4222 --creds /w/u.creds reply demo.svc pong --count 4 &
+    nats --server nats://$SRV:4222 --creds /w/u.creds reply secret.svc leak --count 4 &
+    sleep 30" >/dev/null
+sleep 2
+out=$(docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+    nats --server nats://"$SRV":4222 --creds /w/r.creds request demo.svc ping 2>/dev/null || true)
+printf '%s' "$out" | grep -q "pong" || fail "restricted user failed on an ALLOWED subject: $out"
+# NOTE (measured): the nats CLI exits 0 even when the server rejects the
+# publish — the violation arrives as an async -ERR it merely prints. So the
+# assertions are on OUTPUT and the server log, never the exit code.
+out=$(docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+    nats --server nats://"$SRV":4222 --creds /w/r.creds request secret.svc ping --timeout 2s 2>&1 || true)
+printf '%s' "$out" | grep -q "leak" && fail "restricted user reached secret.svc — permissions not enforced"
+printf '%s' "$out" | grep -q "Permissions Violation" \
+    || fail "expected a Permissions Violation on secret.svc, got: $out"
+docker logs "$SRV" 2>&1 | grep -q 'Publish Violation.*Subject \"secret.svc\"' \
+    || fail "server log lacks the Publish Violation evidence"
+docker rm -f "$SRV-resp" >/dev/null 2>&1 || true
+check "C++-minted permissions ENFORCED: demo.> allowed, secret.svc violation logged"
+
+# 4 ── negative control: no creds → refused
 if docker run --rm --network "$NET" "$BOX_IMG" \
         nats --server nats://"$SRV":4222 rtt >/dev/null 2>&1; then
     fail "server accepted a connection WITHOUT credentials — auth not enforced"

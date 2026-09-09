@@ -243,6 +243,7 @@ if (JWT_BUILD_TESTS AND BUILD_TESTING)
 
     add_executable(claims_test tests/claims_test.cpp)
     target_compile_options(claims_test PRIVATE ${JWT_WARNING_FLAGS})
+    target_compile_definitions(claims_test PRIVATE ${JWT_FIXTURES_DEF})
     target_link_libraries(claims_test PRIVATE jwt nkeys::nkeys nlohmann_json::nlohmann_json ${GTEST_LIBS} Threads::Threads)
     target_include_directories(claims_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
@@ -313,7 +314,8 @@ if (JWT_INSTALL)
         ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/claims.hpp
         ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/operator_claims.hpp
         ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/account_claims.hpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/user_claims.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/permissions.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/user_claims.hpp
         ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/validation.hpp
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/jwt
     )
