@@ -146,7 +146,11 @@ accounts and ActivationClaims as a fourth claim type (decode dispatch +
 decorateJWT "ACTIVATION"); import tokens are cross-checked against the
 import's account at encode; latency sampling 0 serializes as "headers";
 response_threshold is NANOSECONDS. The e2e serves a token_req export across
-accounts through a C++-minted activation.
+accounts through a C++-minted activation. Operator resolver wiring is ported
+(account_server_url, operator_service_urls with the nats/tls/ws/wss
+no-creds/no-path rules, system_account, assert_server_version,
+strict_signing_key_usage; signing keys validated as real operator keys) —
+the e2e proves the server honors a C++-minted system_account via $SYS.
 The library is consumable four ways (find_package(natsjwt) static/shared,
 pkg-config, add_subdirectory embed — all gated by `tests/packaging/test.sh`,
 which installs a real nkeys-cpp and thereby also exercises the system-nkeys

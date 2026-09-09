@@ -42,7 +42,9 @@ second connection is likewise a CI gate, as is a revoked user's creds being
 refused (revocation lists: `revoke`/`revokeAt`/`isRevoked` + `RevokeAll`).
 Cross-account sharing is ported — typed exports/imports and `ActivationClaims`
 — with a token-gated export served across accounts on a real nats-server as
-the CI gate.
+the CI gate. Operator resolver wiring (account/service URLs, system
+account, version assertion, strict signing-key usage) is ported — the server
+honoring a C++-minted `system_account` over `$SYS` is likewise gated.
 
 ## Quick Start
 

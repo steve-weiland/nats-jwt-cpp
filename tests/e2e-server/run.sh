@@ -22,7 +22,9 @@
 #      second account, imported via a C++-minted activation, served across
 #   7. revocation enforcement: a resolver variant revokes the restricted
 #      user — its creds are refused while others still work
-#   8. negative control: the same connection WITHOUT creds is refused
+#   8. system account: the operator's system_account field designates $SYS —
+#      its user can ping $SYS.REQ.SERVER.PING, a regular user cannot
+#   9. negative control: the same connection WITHOUT creds is refused
 #      (proves the server is actually enforcing the operator-mode auth our
 #      chain is supposed to satisfy — without this, check 2 could pass
 #      against an open server)
@@ -54,7 +56,7 @@ fail() { echo "  FAIL: $1" >&2; exit 1; }
 
 echo "e2e-server: minting the README trust chain"
 "$CPP" bootstrap "$WORK" >/dev/null
-chmod 644 "$WORK"/u.creds "$WORK"/r.creds "$WORK"/s.creds "$WORK"/l.creds "$WORK"/x.creds "$WORK"/resolver.conf "$WORK"/resolver-revoked.conf
+chmod 644 "$WORK"/u.creds "$WORK"/r.creds "$WORK"/s.creds "$WORK"/l.creds "$WORK"/x.creds "$WORK"/sys.creds "$WORK"/resolver.conf "$WORK"/resolver-revoked.conf
 
 docker network create "$NET" >/dev/null
 docker run -d --name "$SRV" --network "$NET" \
@@ -171,7 +173,21 @@ fi
 docker rm -f "$SRV-rev" >/dev/null 2>&1 || true
 check "REVOCATION enforced: revoked user's creds refused, unrevoked user still fine"
 
-# 8 ── negative control: no creds → refused
+# 8 ── SYSTEM ACCOUNT honored: the operator claims designate $SYS — its user
+# can ping the server over $SYS.REQ; a regular user cannot
+out=$(docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+    nats --server nats://"$SRV":4222 --creds /w/sys.creds request '$SYS.REQ.SERVER.PING' '' --timeout 3s 2>&1 || true)
+printf '%s' "$out" | grep -q "statsz" || fail "system-account user could not ping over \$SYS: $out"
+# (exit codes are useless here — the CLI exits 0 on "No responders" too;
+# assert on the OUTPUT: a regular user must get no stats back)
+out=$(docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+    nats --server nats://"$SRV":4222 --creds /w/u.creds request '$SYS.REQ.SERVER.PING' '' --timeout 2s 2>&1 || true)
+printf '%s' "$out" | grep -q "statsz" && fail "regular user reached \$SYS.REQ.SERVER.PING: $out"
+printf '%s' "$out" | grep -qi "no responders\|timeout" \
+    || fail "expected no responders/timeout for the regular user, got: $out"
+check "SYSTEM ACCOUNT honored: \$SYS ping answers the sys user, not a regular one"
+
+# 9 ── negative control: no creds → refused
 if docker run --rm --network "$NET" "$BOX_IMG" \
         nats --server nats://"$SRV":4222 rtt >/dev/null 2>&1; then
     fail "server accepted a connection WITHOUT credentials — auth not enforced"

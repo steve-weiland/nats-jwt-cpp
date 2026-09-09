@@ -46,10 +46,22 @@ int main([[maybe_unused]] int argc, char** argv) try {
         // operator, plus a signing key that will issue accounts
         auto okp = nkeys::CreateOperator();
         auto oskp = nkeys::CreateOperator();
+        // the system account ($SYS): designated in the OPERATOR claims — the
+        // e2e proves the server honors the C++-minted system_account field
+        auto syskp = nkeys::CreateAccount();
+        jwt::AccountClaims sysc(syskp->publicString());
+        sysc.setName("SYS");
+
         jwt::OperatorClaims oc(okp->publicString());
         oc.setName("O");
         oc.addSigningKey(oskp->publicString());
+        oc.setSystemAccount(syskp->publicString());
         std::string opJwt = oc.encode(okp->seedString());
+        std::string sysAccJwt = sysc.encode(oskp->seedString());
+        auto sysukp = nkeys::CreateUser();
+        jwt::UserClaims sysuc(sysukp->publicString());
+        std::string sysUserJwt = sysuc.encode(syskp->seedString());
+        std::string sysCreds = jwt::formatUserConfig(sysUserJwt, sysukp->seedString());
 
         // account: self-sign first (the README flow), hand to the operator,
         // who decodes and re-signs with the SIGNING key
@@ -163,19 +175,21 @@ int main([[maybe_unused]] int argc, char** argv) try {
                                "\t" + akp->publicString() + ": " + accJwt + "\n" +
                                "\t" + lkp->publicString() + ": " + limitedAccJwt + "\n" +
                                "\t" + xkp->publicString() + ": " + exporterJwt + "\n" +
+                               "\t" + syskp->publicString() + ": " + sysAccJwt + "\n" +
                                "}\n";
 
         std::string revokedResolver = "operator: " + opJwt + "\n\n" +
                                       "resolver: MEMORY\n" +
                                       "resolver_preload: {\n" +
                                       "\t" + akp->publicString() + ": " + revokedAccJwt + "\n" +
+                                      "\t" + syskp->publicString() + ": " + sysAccJwt + "\n" +
                                       "}\n";
 
         for (auto& [n, c] : std::vector<std::pair<std::string, std::string>>{
                  {"op.jwt", opJwt}, {"acc.jwt", accJwt}, {"user.jwt", userJwt},
                  {"u.creds", creds}, {"r.creds", restrictedCreds},
                  {"s.creds", scopedCreds}, {"l.creds", limitedCreds},
-                 {"x.creds", exporterCreds},
+                 {"x.creds", exporterCreds}, {"sys.creds", sysCreds},
                  {"resolver.conf", resolver},
                  {"resolver-revoked.conf", revokedResolver}})
             std::ofstream(dir + "/" + n) << c;

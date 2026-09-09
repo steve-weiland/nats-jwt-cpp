@@ -1,5 +1,6 @@
 #pragma once
 #include "jwt/claims.hpp"
+#include <string>
 #include <vector>
 
 namespace jwt {
@@ -25,6 +26,29 @@ public:
     void setExpires(std::int64_t exp);
     void addSigningKey(const std::string& publicKey);
     [[nodiscard]] const std::vector<std::string>& signingKeys() const;
+
+    /// nats-account-server-style resolver URL (any scheme; tools append
+    /// /accounts/<id> etc).
+    void setAccountServerURL(const std::string& url);
+    [[nodiscard]] std::string accountServerURL() const;
+
+    /// NATS URLs tools may connect to — nats/tls/ws/wss only, no
+    /// credentials, no path.
+    [[nodiscard]] std::vector<std::string>& operatorServiceURLs();
+    [[nodiscard]] const std::vector<std::string>& operatorServiceURLs() const;
+
+    /// Public key of the system account ($SYS events/monitoring).
+    void setSystemAccount(const std::string& accountPublicKey);
+    [[nodiscard]] std::string systemAccount() const;
+
+    /// Minimum server version, "<major>.<minor>.<update>".
+    void setAssertServerVersion(const std::string& version);
+    [[nodiscard]] std::string assertServerVersion() const;
+
+    /// When true, accounts/users must be issued by signing keys, never the
+    /// identity key.
+    void setStrictSigningKeyUsage(bool strict);
+    [[nodiscard]] bool strictSigningKeyUsage() const;
 
 private:
     friend std::unique_ptr<OperatorClaims> decodeOperatorClaims(const std::string&);

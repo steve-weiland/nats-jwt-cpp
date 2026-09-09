@@ -106,7 +106,8 @@ TEST(JwtDecodingTest, OperatorRoundTrip) {
     // Create and encode operator claims
     auto original = jwt::OperatorClaims(operator_kp->publicString());
     original.setName("Test Operator");
-    original.addSigningKey("OABC123");
+    const auto signingKey = nkeys::CreateOperator()->publicString();
+    original.addSigningKey(signingKey);
 
     std::string jwt_string = original.encode(operator_kp->seedString());
 
@@ -120,7 +121,7 @@ TEST(JwtDecodingTest, OperatorRoundTrip) {
     EXPECT_GT(decoded->issuedAt(), 0);
     EXPECT_EQ(decoded->expires(), 0); // Not set
     EXPECT_EQ(decoded->signingKeys().size(), 1);
-    EXPECT_EQ(decoded->signingKeys()[0], "OABC123");
+    EXPECT_EQ(decoded->signingKeys()[0], signingKey);
 }
 
 // Round-trip test: Account encode → decode

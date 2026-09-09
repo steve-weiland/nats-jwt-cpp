@@ -56,13 +56,15 @@ TEST(OperatorClaimsTest, AddSigningKeysWorks) {
 
     EXPECT_TRUE(claims.signingKeys().empty());
 
-    claims.addSigningKey("OABC123");
+    const auto k1 = nkeys::CreateOperator()->publicString();
+    claims.addSigningKey(k1);
     EXPECT_EQ(claims.signingKeys().size(), 1);
-    EXPECT_EQ(claims.signingKeys()[0], "OABC123");
+    EXPECT_EQ(claims.signingKeys()[0], k1);
 
-    claims.addSigningKey("OXYZ789");
+    const auto k2 = nkeys::CreateOperator()->publicString();
+    claims.addSigningKey(k2);
     EXPECT_EQ(claims.signingKeys().size(), 2);
-    EXPECT_EQ(claims.signingKeys()[1], "OXYZ789");
+    EXPECT_EQ(claims.signingKeys()[1], k2);
 }
 
 TEST(OperatorClaimsTest, IssuedAtDefaultsToZero) {
@@ -443,7 +445,7 @@ TEST(ClaimsEdgeCaseTest, ManySigningKeys) {
 
     // Add 100 signing keys
     for (int i = 0; i < 100; i++) {
-        claims.addSigningKey("OKEY" + std::to_string(i));
+        claims.addSigningKey(nkeys::CreateOperator()->publicString());
     }
 
     EXPECT_EQ(claims.signingKeys().size(), 100);
@@ -452,8 +454,11 @@ TEST(ClaimsEdgeCaseTest, ManySigningKeys) {
     auto decoded = jwt::decodeOperatorClaims(jwt);
 
     EXPECT_EQ(decoded->signingKeys().size(), 100);
-    EXPECT_EQ(decoded->signingKeys()[0], "OKEY0");
-    EXPECT_EQ(decoded->signingKeys()[99], "OKEY99");
+    // signing keys serialize SORTED (Go); order-insensitive containment check
+    std::vector<std::string> in = claims.signingKeys(), out = decoded->signingKeys();
+    std::sort(in.begin(), in.end());
+    std::sort(out.begin(), out.end());
+    EXPECT_EQ(in, out);
 }
 
 int main(int argc, char **argv) {
@@ -1096,4 +1101,85 @@ TEST(CrossAccountTest, HeadersSamplingRoundTrips) {
     EXPECT_EQ(nats.at("exports")[0].at("service_latency").at("sampling"), "headers");
     auto rt = jwt::decodeAccountClaims(ac.encode(akp->seedString()));
     EXPECT_EQ(rt->exports()[0].latency->sampling, 0);
+}
+
+// ============================================================================
+// Operator/resolver wiring (fix-plan group 4) — measured from Go:
+// account_server_url needs any scheme; operator_service_urls allow only
+// nats/tls/ws/wss, no credentials, no path; system_account must be an account
+// key; assert_server_version is <major>.<minor>.<update>, non-negative ints;
+// signing keys are validated as operator keys at encode.
+// ============================================================================
+
+TEST(OperatorWiringTest, DecodesGoRichOperatorIntoTypedFields) {
+    auto oc = jwt::decodeOperatorClaims(readFixture2("op-rich.jwt"));
+    EXPECT_EQ(oc->accountServerURL(), "https://resolver.example.com:9090/jwt/v1");
+    EXPECT_EQ(oc->operatorServiceURLs(),
+              (std::vector<std::string>{"nats://n1.example.com:4222",
+                                        "tls://n2.example.com:4222"}));
+    EXPECT_EQ(oc->systemAccount()[0], 'A');
+    EXPECT_EQ(oc->assertServerVersion(), "2.10.0");
+    EXPECT_TRUE(oc->strictSigningKeyUsage());
+    EXPECT_EQ(oc->signingKeys().size(), 1u);
+}
+
+TEST(OperatorWiringTest, RichOperatorWireEqualsGo) {
+    // rebuild the golden's claims with the same keys → identical nats object
+    auto golden = jwt::decodeOperatorClaims(readFixture2("op-rich.jwt"));
+    jwt::OperatorClaims oc(golden->subject());
+    oc.setName("rich-op");
+    oc.addSigningKey(golden->signingKeys()[0]);
+    oc.setAccountServerURL(golden->accountServerURL());
+    for (const auto& u : golden->operatorServiceURLs()) oc.operatorServiceURLs().push_back(u);
+    oc.setSystemAccount(golden->systemAccount());
+    oc.setAssertServerVersion("2.10.0");
+    oc.setStrictSigningKeyUsage(true);
+    auto okp = nkeys::CreateOperator();
+    EXPECT_EQ(natsObjectOf(oc.encode(okp->seedString())),
+              natsObjectOf(readFixture2("op-rich.jwt")));
+
+    // decode→re-encode of the golden itself survives equal
+    EXPECT_EQ(natsObjectOf(golden->encode(okp->seedString())),
+              natsObjectOf(readFixture2("op-rich.jwt")));
+}
+
+TEST(OperatorWiringTest, ValidationRulesMatchGo) {
+    auto okp = nkeys::CreateOperator();
+    auto ukp = nkeys::CreateUser();
+
+    // service URLs: scheme whitelist, no credentials, no path
+    for (const std::string bad :
+         {"http://h:4222", "nats://user:pass@h:4222", "nats://h:4222/path"}) {
+        jwt::OperatorClaims oc(okp->publicString());
+        oc.operatorServiceURLs().push_back(bad);
+        EXPECT_THROW((void)oc.encode(okp->seedString()), jwt::InvalidClaimsError) << bad;
+    }
+    for (const std::string good :
+         {"nats://h:4222", "tls://h:4222", "ws://h:80", "wss://h:443"}) {
+        jwt::OperatorClaims oc(okp->publicString());
+        oc.operatorServiceURLs().push_back(good);
+        EXPECT_NO_THROW((void)oc.encode(okp->seedString())) << good;
+    }
+
+    // account server URL requires a scheme (any)
+    jwt::OperatorClaims noScheme(okp->publicString());
+    noScheme.setAccountServerURL("resolver.example.com/jwt");
+    EXPECT_THROW((void)noScheme.encode(okp->seedString()), jwt::InvalidClaimsError);
+
+    // system account must be an account key
+    jwt::OperatorClaims badSys(okp->publicString());
+    badSys.setSystemAccount(ukp->publicString());
+    EXPECT_THROW((void)badSys.encode(okp->seedString()), jwt::InvalidClaimsError);
+
+    // version must be three non-negative ints
+    for (const std::string bad : {"2.10", "2.x.1", "-1.2.3"}) {
+        jwt::OperatorClaims oc(okp->publicString());
+        oc.setAssertServerVersion(bad);
+        EXPECT_THROW((void)oc.encode(okp->seedString()), jwt::InvalidClaimsError) << bad;
+    }
+
+    // signing keys must be operator keys
+    jwt::OperatorClaims badSk(okp->publicString());
+    badSk.addSigningKey(ukp->publicString());
+    EXPECT_THROW((void)badSk.encode(okp->seedString()), jwt::InvalidClaimsError);
 }

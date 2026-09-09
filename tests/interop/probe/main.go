@@ -103,6 +103,26 @@ func main() {
 		}
 		fmt.Printf("subs=%d data=%d payload=%d\n", uc.Limits.Subs, uc.Limits.Data, uc.Limits.Payload)
 		fmt.Printf("src=%v times=%v locale=%s\n", uc.Limits.Src, uc.Limits.Times, uc.Limits.Locale)
+	case "genrichoperator": // dir → operator with all resolver-wiring fields
+		dir := os.Args[2]
+		okp, _ := nkeys.CreateOperator()
+		opk, _ := okp.PublicKey()
+		oskp, _ := nkeys.CreateOperator()
+		ospk, _ := oskp.PublicKey()
+		sakp, _ := nkeys.CreateAccount()
+		sapk, _ := sakp.PublicKey()
+		oc := jwt.NewOperatorClaims(opk)
+		oc.Name = "rich-op"
+		oc.SigningKeys.Add(ospk)
+		oc.AccountServerURL = "https://resolver.example.com:9090/jwt/v1"
+		oc.OperatorServiceURLs.Add("nats://n1.example.com:4222", "tls://n2.example.com:4222")
+		oc.SystemAccount = sapk
+		oc.AssertServerVersion = "2.10.0"
+		oc.StrictSigningKeyUsage = true
+		token, err := oc.Encode(okp)
+		must(err)
+		must(os.WriteFile(dir+"/op-rich.jwt", []byte(token), 0600))
+		fmt.Println("OK")
 	case "genxaccount": // dir → exporter + importer accounts + activation claim
 		dir := os.Args[2]
 		akp, _ := nkeys.CreateAccount() // exporter A
