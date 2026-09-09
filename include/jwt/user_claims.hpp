@@ -37,6 +37,14 @@ public:
     [[nodiscard]] UserLimits& limits();
     [[nodiscard]] const UserLimits& limits() const;
 
+    /// Scoped users carry NO permissions/limits of their own — the server
+    /// applies the issuing scope's template (Go: SetScoped). setScoped(false)
+    /// restores the -1 no-limit defaults.
+    void setScoped(bool scoped);
+    /// True when no permission or limit is set (Go: HasEmptyPermissions) —
+    /// required of users issued by a scoped signing key.
+    [[nodiscard]] bool hasEmptyPermissions() const;
+
 private:
     friend std::unique_ptr<UserClaims> decodeUserClaims(const std::string&);
     class Impl;

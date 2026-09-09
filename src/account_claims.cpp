@@ -3,6 +3,9 @@
 #include "jwt/jwt_errors.hpp"
 #include "base64url.hpp"
 #include "jwt_utils.hpp"
+#include "scope_serialization.hpp"
+#include <algorithm>
+#include <map>
 #include <nkeys/nkeys.hpp>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -33,6 +36,7 @@ public:
     std::int64_t issuedAt_ = 0;
     std::int64_t expires_ = 0;
     std::vector<std::string> signingKeys_;
+    std::map<std::string, UserScope> scopes_;
 };
 
 AccountClaims::AccountClaims(const std::string& accountPublicKey)
@@ -56,6 +60,20 @@ void AccountClaims::addSigningKey(const std::string& publicKey) {
 }
 const std::vector<std::string>& AccountClaims::signingKeys() const {
     return impl_->signingKeys_;
+}
+
+void AccountClaims::setScope(const UserScope& scope) {
+    if (std::find(impl_->signingKeys_.begin(), impl_->signingKeys_.end(), scope.key) ==
+        impl_->signingKeys_.end()) {
+        impl_->signingKeys_.push_back(scope.key);
+    }
+    impl_->scopes_[scope.key] = scope;
+}
+
+std::optional<UserScope> AccountClaims::getScope(const std::string& signingKey) const {
+    auto it = impl_->scopes_.find(signingKey);
+    if (it == impl_->scopes_.end()) return std::nullopt;
+    return it->second;
 }
 
 std::string AccountClaims::encode(const std::string& seed) const {
@@ -96,7 +114,20 @@ std::string AccountClaims::encode(const std::string& seed) const {
     // overwrite the fields this port manages.
     json nats_claims = impl_->natsRaw_;
     if (!impl_->signingKeys_.empty()) {
-        nats_claims["signing_keys"] = impl_->signingKeys_;
+        // Go serializes signing keys SORTED, plain keys as strings and
+        // scoped keys as user_scope objects, in one mixed array.
+        auto sorted = impl_->signingKeys_;
+        std::sort(sorted.begin(), sorted.end());
+        json keys = json::array();
+        for (const auto& key : sorted) {
+            auto it = impl_->scopes_.find(key);
+            if (it != impl_->scopes_.end()) {
+                keys.push_back(internal::userScopeToJson(it->second));
+            } else {
+                keys.push_back(key);
+            }
+        }
+        nats_claims["signing_keys"] = keys;
     } else {
         nats_claims.erase("signing_keys");
     }
@@ -234,10 +265,17 @@ std::unique_ptr<AccountClaims> decodeAccountClaims(const std::string& jwt) {
         claims->setExpires(payload["exp"].get<std::int64_t>());
     }
 
-    // Extract signing keys if present
+    // Extract signing keys if present — a mixed array: plain keys are
+    // strings, scoped keys are user_scope objects (Go's SigningKeys map)
     if (nats.contains("signing_keys") && nats["signing_keys"].is_array()) {
         for (const auto& key : nats["signing_keys"]) {
-            claims->addSigningKey(key.get<std::string>());
+            if (key.is_string()) {
+                claims->addSigningKey(key.get<std::string>());
+            } else if (key.is_object() && key.value("kind", "") == "user_scope") {
+                claims->setScope(internal::userScopeFromJson(key));
+            } else {
+                throw InvalidClaimsError("unknown signing key entry in account JWT");
+            }
         }
     }
 

@@ -1,5 +1,7 @@
 #pragma once
 #include "jwt/claims.hpp"
+#include "jwt/permissions.hpp"
+#include <optional>
 #include <vector>
 
 namespace jwt {
@@ -26,6 +28,14 @@ public:
     void setIssuer(const std::string& issuerKey);
     void addSigningKey(const std::string& publicKey);
     [[nodiscard]] const std::vector<std::string>& signingKeys() const;
+
+    /// Attaches a SCOPED signing key: users issued by scope.key get the
+    /// scope's permission/limit template applied by the server (and must
+    /// themselves carry none — see UserClaims::setScoped). The key is also
+    /// listed in signingKeys().
+    void setScope(const UserScope& scope);
+    /// The scope for a signing key, if that key is scoped.
+    [[nodiscard]] std::optional<UserScope> getScope(const std::string& signingKey) const;
 
 private:
     friend std::unique_ptr<AccountClaims> decodeAccountClaims(const std::string&);

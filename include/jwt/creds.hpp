@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -31,5 +32,17 @@ namespace jwt {
 /// Armors an operator/account/user seed with Go's DecorateSeed template,
 /// byte-identical. Throws InvalidClaimsError for non-signing seeds.
 [[nodiscard]] std::string decorateSeed(std::string_view seed);
+
+/// Go's IssueUserJWT: mints a SCOPED user (no permissions of its own — the
+/// account's scope template governs it) issued by an account scoped signing
+/// key, with issuer_account set. name defaults to the user's public key;
+/// expirationSeconds > 0 sets exp = now + that (0 = never expires).
+/// Divergence, documented: Go's optional tags parameter is not ported (tags
+/// are an un-ported field).
+[[nodiscard]] std::string issueUserJWT(const std::string& scopedSigningKeySeed,
+                                       const std::string& accountId,
+                                       const std::string& publicUserKey,
+                                       const std::string& name = "",
+                                       std::int64_t expirationSeconds = 0);
 
 } // namespace jwt

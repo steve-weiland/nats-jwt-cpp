@@ -103,6 +103,38 @@ func main() {
 		}
 		fmt.Printf("subs=%d data=%d payload=%d\n", uc.Limits.Subs, uc.Limits.Data, uc.Limits.Payload)
 		fmt.Printf("src=%v times=%v locale=%s\n", uc.Limits.Src, uc.Limits.Times, uc.Limits.Locale)
+	case "genscopedaccount": // dir → account with plain + SCOPED signing key, and an IssueUserJWT user
+		dir := os.Args[2]
+		akp, _ := nkeys.CreateAccount()
+		apk, _ := akp.PublicKey()
+		plainSK, _ := nkeys.CreateAccount()
+		plainPK, _ := plainSK.PublicKey()
+		scopedSK, _ := nkeys.CreateAccount()
+		scopedPK, _ := scopedSK.PublicKey()
+
+		ac := jwt.NewAccountClaims(apk)
+		ac.Name = "SA"
+		ac.SigningKeys.Add(plainPK)
+		scope := jwt.NewUserScope()
+		scope.Key = scopedPK
+		scope.Role = "demo-only"
+		scope.Description = "may only touch demo.>"
+		scope.Template.Permissions.Pub.Allow.Add("demo.>")
+		scope.Template.Permissions.Sub.Allow.Add("demo.>", "_INBOX.>")
+		scope.Template.Limits.Payload = 4096
+		ac.SigningKeys.AddScopedSigner(scope)
+		accJWT, err := ac.Encode(akp)
+		must(err)
+
+		ukp, _ := nkeys.CreateUser()
+		upk, _ := ukp.PublicKey()
+		userJWT, err := jwt.IssueUserJWT(scopedSK, apk, upk, "scoped-user", 0)
+		must(err)
+
+		must(os.WriteFile(dir+"/acc-scoped.jwt", []byte(accJWT), 0600))
+		must(os.WriteFile(dir+"/scoped-user.jwt", []byte(userJWT), 0600))
+		must(os.WriteFile(dir+"/scoped-user.apub", []byte(apk), 0600))
+		fmt.Println("OK")
 	case "djwt": // jwt file → DecorateJWT output (armored by claim type)
 		data, err := os.ReadFile(os.Args[2])
 		must(err)

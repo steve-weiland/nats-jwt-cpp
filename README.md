@@ -34,7 +34,9 @@ creds generation AND parsing (`parseDecoratedJWT`/`parseDecoratedNKey`/
 Go). Un-ported fields survive decode→re-encode untouched. NOT ported (by
 choice): account limits/imports/exports beyond the defaults, activation
 claims, scoped signing keys, bearer/connection-type flags, audience/tags,
-v1 token reading.
+v1 token reading. Scoped signing keys ARE ported (`UserScope` +
+`issueUserJWT`) — a permissionless scoped user governed by the account's
+template is enforced against a real nats-server in CI.
 
 ## Quick Start
 

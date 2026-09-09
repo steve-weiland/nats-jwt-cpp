@@ -2,6 +2,7 @@
 #include "jwt/claims.hpp"
 #include "jwt/validation.hpp"
 #include "jwt/jwt_errors.hpp"
+#include "jwt/creds.hpp"
 #include "jwt/operator_claims.hpp"
 #include "jwt/account_claims.hpp"
 #include "jwt/user_claims.hpp"
@@ -622,4 +623,130 @@ TEST(UserPermissionsTest, SrcAcceptsCommaStringOnDecode) {
         reinterpret_cast<const std::uint8_t*>(si.data()), si.size());
     auto uc = jwt::decodeUserClaims(si + "." + jwt::internal::base64url_encode(kp->sign(sib)));
     EXPECT_EQ(uc->limits().src, (std::vector<std::string>{"10.0.0.0/8", "192.168.1.0/24"}));
+}
+
+// ============================================================================
+// Scoped signing keys + IssueUserJWT (fix-plan "not-ported" #8 + #14) — wire
+// facts measured from Go: signing_keys serializes SORTED, plain keys as
+// strings and scopes as {kind:"user_scope", key, role, template, description}
+// (none omitempty); SetScoped zeroes UserPermissionLimits so a scoped user's
+// wire has pub:{}, sub:{} and NO subs/data/payload; ValidateScopedSigner
+// demands scoped users carry no permissions or limits of their own.
+// ============================================================================
+
+TEST(ScopedSigningKeysTest, DecodesGoScopedAccount) {
+    auto ac = jwt::decodeAccountClaims(readFixture2("acc-scoped.jwt"));
+    ASSERT_EQ(ac->signingKeys().size(), 2u);
+
+    // find which key carries the scope
+    std::optional<jwt::UserScope> scope;
+    std::string plainKey;
+    for (const auto& k : ac->signingKeys()) {
+        if (auto s = ac->getScope(k)) scope = s;
+        else plainKey = k;
+    }
+    ASSERT_TRUE(scope.has_value());
+    EXPECT_FALSE(plainKey.empty());
+    EXPECT_EQ(scope->role, "demo-only");
+    EXPECT_EQ(scope->description, "may only touch demo.>");
+    EXPECT_EQ(scope->permissions.pub.allow, (std::vector<std::string>{"demo.>"}));
+    EXPECT_EQ(scope->permissions.sub.allow,
+              (std::vector<std::string>{"demo.>", "_INBOX.>"}));
+    EXPECT_EQ(scope->limits.subs, -1);
+    EXPECT_EQ(scope->limits.payload, 4096);
+}
+
+TEST(ScopedSigningKeysTest, ReEncodePreservesScopeByteFaithfully) {
+    // decode the Go golden, re-sign with a fresh operator: the whole nats
+    // object must survive EQUAL — scope, sorted mixed array, and all.
+    auto ac = jwt::decodeAccountClaims(readFixture2("acc-scoped.jwt"));
+    auto okp = nkeys::CreateOperator();
+    auto ours = natsObjectOf(ac->encode(okp->seedString()));
+    auto golden = natsObjectOf(readFixture2("acc-scoped.jwt"));
+    EXPECT_EQ(ours, golden);
+}
+
+TEST(ScopedSigningKeysTest, SigningKeysSerializeSorted) {
+    auto akp = nkeys::CreateAccount();
+    jwt::AccountClaims ac(akp->publicString());
+    // add several keys in whatever order they come — wire must be sorted
+    std::vector<std::string> keys;
+    for (int i = 0; i < 3; ++i) {
+        keys.push_back(nkeys::CreateAccount()->publicString());
+        ac.addSigningKey(keys.back());
+    }
+    auto nats = natsObjectOf(ac.encode(akp->seedString()));
+    auto onWire = nats.at("signing_keys").get<std::vector<std::string>>();
+    auto sorted = onWire;
+    std::sort(sorted.begin(), sorted.end());
+    EXPECT_EQ(onWire, sorted);
+}
+
+TEST(ScopedSigningKeysTest, SetScopedZeroesPermissionLimits) {
+    auto ukp = nkeys::CreateUser();
+    auto akp = nkeys::CreateAccount();
+    jwt::UserClaims uc(ukp->publicString());
+    uc.permissions().pub.allow = {"x"};
+    EXPECT_FALSE(uc.hasEmptyPermissions());
+    uc.setScoped(true);
+    EXPECT_TRUE(uc.hasEmptyPermissions());
+    auto nats = natsObjectOf(uc.encode(akp->seedString()));
+    EXPECT_EQ(nats.at("pub"), nlohmann::json::object());
+    for (const char* absent : {"subs", "data", "payload"}) {
+        EXPECT_FALSE(nats.contains(absent)) << absent;
+    }
+    // setScoped(false) restores Go's -1 defaults
+    uc.setScoped(false);
+    EXPECT_EQ(uc.limits().subs, -1);
+}
+
+TEST(ScopedSigningKeysTest, IssueUserJWTMatchesGoShape) {
+    auto akp = nkeys::CreateAccount();
+    auto scopedSK = nkeys::CreateAccount();
+    auto ukp = nkeys::CreateUser();
+    auto token = jwt::issueUserJWT(scopedSK->seedString(), akp->publicString(),
+                                   ukp->publicString());
+    // Go's IssueUserJWT wire: scoped (empty) user + issuer_account, nothing else
+    auto nats = natsObjectOf(token);
+    nlohmann::json expected = {
+        {"pub", nlohmann::json::object()}, {"sub", nlohmann::json::object()},
+        {"issuer_account", akp->publicString()},
+        {"type", "user"}, {"version", 2}};
+    EXPECT_EQ(nats, expected);
+    auto decoded = jwt::decodeUserClaims(token);
+    EXPECT_EQ(decoded->name().value_or(""), ukp->publicString());  // Go defaults name to the user key
+    EXPECT_EQ(decoded->issuer(), scopedSK->publicString());
+
+    // parameter validation, as in Go
+    EXPECT_THROW((void)jwt::issueUserJWT(scopedSK->seedString(), ukp->publicString(),
+                                         ukp->publicString()),
+                 jwt::InvalidClaimsError);
+}
+
+TEST(ScopedSigningKeysTest, ChainRejectsScopedUserWithOwnPermissions) {
+    auto akp = nkeys::CreateAccount();
+    auto scopedSK = nkeys::CreateAccount();
+    jwt::AccountClaims ac(akp->publicString());
+    jwt::UserScope scope;
+    scope.key = scopedSK->publicString();
+    scope.role = "limited";
+    scope.permissions.pub.allow = {"demo.>"};
+    ac.setScope(scope);
+    auto okp = nkeys::CreateOperator();
+    auto acc = jwt::decodeAccountClaims(ac.encode(okp->seedString()));
+
+    // scoped-issued user with EMPTY permissions: chains fine
+    auto ukp = nkeys::CreateUser();
+    auto good = jwt::decodeUserClaims(jwt::issueUserJWT(
+        scopedSK->seedString(), akp->publicString(), ukp->publicString()));
+    EXPECT_TRUE(jwt::validateIssuerChain(*good, *acc).valid);
+
+    // scoped-issued user smuggling its OWN permissions: the chain must fail
+    // (Go: "scoped users require no permissions or limits set" — otherwise
+    // the user could escalate past the scope template)
+    jwt::UserClaims bad(ukp->publicString());
+    bad.setIssuerAccount(akp->publicString());
+    bad.permissions().pub.allow = {"secret.>"};
+    auto badUser = jwt::decodeUserClaims(bad.encode(scopedSK->seedString()));
+    EXPECT_FALSE(jwt::validateIssuerChain(*badUser, *acc).valid);
 }

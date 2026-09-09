@@ -1,6 +1,7 @@
 #include "jwt/creds.hpp"
 #include "jwt/jwt.hpp"
 #include <nkeys/nkeys.hpp>
+#include <chrono>
 #include <sstream>
 
 namespace jwt {
@@ -68,6 +69,30 @@ std::string decorateSeed(std::string_view seed) {
     oss << "\n";
     oss << "*************************************************************\n";
     return oss.str();
+}
+
+std::string issueUserJWT(const std::string& scopedSigningKeySeed,
+                         const std::string& accountId,
+                         const std::string& publicUserKey,
+                         const std::string& name,
+                         std::int64_t expirationSeconds) {
+    if (!nkeys::IsValidPublicAccountKey(accountId)) {
+        throw InvalidClaimsError("issueUserJWT requires an account key for accountId");
+    }
+    if (!nkeys::IsValidPublicUserKey(publicUserKey)) {
+        throw InvalidClaimsError("issueUserJWT requires a user key for publicUserKey");
+    }
+    UserClaims claims(publicUserKey);
+    claims.setScoped(true);
+    claims.setIssuerAccount(accountId);
+    claims.setName(name.empty() ? publicUserKey : name);
+    if (expirationSeconds > 0) {
+        claims.setExpires(std::chrono::duration_cast<std::chrono::seconds>(
+                              std::chrono::system_clock::now().time_since_epoch())
+                              .count() +
+                          expirationSeconds);
+    }
+    return claims.encode(scopedSigningKeySeed);
 }
 
 } // namespace jwt

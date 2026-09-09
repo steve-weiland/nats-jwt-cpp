@@ -12,7 +12,10 @@
 #   3. permission enforcement: a second, RESTRICTED user (pub allow demo.>
 #      only) minted by this library round-trips on demo.svc while its request
 #      to secret.svc is blocked by the server ("Permissions Violation" logged)
-#   4. negative control: the same connection WITHOUT creds is refused
+#   4. scope-template enforcement: a user minted by issueUserJWT (carrying
+#      NO permissions of its own) is governed by the account's user_scope
+#      template — demo.> allowed, secret.svc a violation
+#   5. negative control: the same connection WITHOUT creds is refused
 #      (proves the server is actually enforcing the operator-mode auth our
 #      chain is supposed to satisfy — without this, check 2 could pass
 #      against an open server)
@@ -44,7 +47,7 @@ fail() { echo "  FAIL: $1" >&2; exit 1; }
 
 echo "e2e-server: minting the README trust chain"
 "$CPP" bootstrap "$WORK" >/dev/null
-chmod 644 "$WORK"/u.creds "$WORK"/r.creds "$WORK"/resolver.conf
+chmod 644 "$WORK"/u.creds "$WORK"/r.creds "$WORK"/s.creds "$WORK"/resolver.conf
 
 docker network create "$NET" >/dev/null
 docker run -d --name "$SRV" --network "$NET" \
@@ -93,7 +96,27 @@ docker logs "$SRV" 2>&1 | grep -q 'Publish Violation.*Subject \"secret.svc\"' \
 docker rm -f "$SRV-resp" >/dev/null 2>&1 || true
 check "C++-minted permissions ENFORCED: demo.> allowed, secret.svc violation logged"
 
-# 4 ── negative control: no creds → refused
+# 4 ── SCOPE TEMPLATE enforced: the scoped user's JWT carries NO permissions
+# — the account's user_scope template (pub demo.> only) is what the server
+# applies. Round trip on demo.svc works; secret.svc is a violation.
+docker rm -f "$SRV-resp" >/dev/null 2>&1 || true
+docker run -d --name "$SRV-resp" --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" sh -c "
+    nats --server nats://$SRV:4222 --creds /w/u.creds reply demo.svc pong --count 4 &
+    nats --server nats://$SRV:4222 --creds /w/u.creds reply secret.svc leak --count 4 &
+    sleep 30" >/dev/null
+sleep 2
+out=$(docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+    nats --server nats://"$SRV":4222 --creds /w/s.creds request demo.svc ping 2>/dev/null || true)
+printf '%s' "$out" | grep -q "pong" || fail "scoped user failed on a template-ALLOWED subject: $out"
+out=$(docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+    nats --server nats://"$SRV":4222 --creds /w/s.creds request secret.svc ping --timeout 2s 2>&1 || true)
+printf '%s' "$out" | grep -q "leak" && fail "scoped user reached secret.svc — template not applied"
+printf '%s' "$out" | grep -q "Permissions Violation" \
+    || fail "expected a Permissions Violation for the scoped user, got: $out"
+docker rm -f "$SRV-resp" >/dev/null 2>&1 || true
+check "SCOPE TEMPLATE enforced: permissionless user governed by the account's user_scope"
+
+# 5 ── negative control: no creds → refused
 if docker run --rm --network "$NET" "$BOX_IMG" \
         nats --server nats://"$SRV":4222 rtt >/dev/null 2>&1; then
     fail "server accepted a connection WITHOUT credentials — auth not enforced"

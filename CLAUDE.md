@@ -129,8 +129,12 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
 Scope cuts are documented in the README (account imports/exports/custom
 limits, activations, scoped signing keys, bearer/conn-type flags, aud/tags,
 v1 reading). User permissions/limits ARE ported — real-server-enforced in CI
-(e2e check 3) — and creds parse/decorate is ported (creds.hpp: parse trio
-delegates to nkeys-cpp; decorate is authenticated and byte-golden vs Go).
+(e2e check 3) — creds parse/decorate is ported (creds.hpp: parse trio
+delegates to nkeys-cpp; decorate is authenticated and byte-golden vs Go) —
+and scoped signing keys are ported (UserScope in a SORTED mixed signing_keys
+array; issueUserJWT mints permissionless scoped users; the chain and the
+real server both reject scoped users carrying their own permissions —
+e2e check 4).
 The library is consumable four ways (find_package(natsjwt) static/shared,
 pkg-config, add_subdirectory embed — all gated by `tests/packaging/test.sh`,
 which installs a real nkeys-cpp and thereby also exercises the system-nkeys

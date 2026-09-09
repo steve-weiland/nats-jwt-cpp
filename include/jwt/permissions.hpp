@@ -46,4 +46,17 @@ struct UserLimits {
     std::string locale;               ///< IANA timezone for times ("times_location")
 };
 
+/// A scoped signing key (Go: UserScope) — an account signing key that
+/// imposes a permission/limit TEMPLATE on every user it issues. The server
+/// replaces the user's (required-empty) permissions with this template.
+struct UserScope {
+    std::string key;          ///< the scoped signing key ("A…")
+    std::string role;
+    std::string description;
+    Permissions permissions;  ///< template permissions
+    UserLimits limits;        ///< template limits
+    bool bearerToken = false;
+    std::vector<std::string> allowedConnectionTypes;
+};
+
 } // namespace jwt

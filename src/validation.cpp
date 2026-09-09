@@ -143,6 +143,18 @@ ValidationResult validateIssuerChain(const Claims& child, const Claims& parent) 
         }
     }
 
+    // A user issued by a SCOPED signing key must carry no permissions or
+    // limits of its own (Go: ValidateScopedSigner) — the scope's template
+    // governs it; anything self-set would be an escalation past the scope.
+    if (const auto* user = dynamic_cast<const UserClaims*>(&child)) {
+        if (const auto* acc = dynamic_cast<const AccountClaims*>(&parent)) {
+            if (acc->getScope(childIssuer) && !user->hasEmptyPermissions()) {
+                return ValidationResult::failure(
+                    "scoped users require no permissions or limits set");
+            }
+        }
+    }
+
     return ValidationResult::success();
 }
 

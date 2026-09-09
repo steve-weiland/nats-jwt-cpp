@@ -3,6 +3,7 @@
 #include "jwt/jwt_errors.hpp"
 #include "base64url.hpp"
 #include "jwt_utils.hpp"
+#include "scope_serialization.hpp"
 #include <nkeys/nkeys.hpp>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -17,20 +18,6 @@ namespace jwt {
 namespace {
 
     using json = nlohmann::json;
-
-    json permissionToJson(const Permission& p) {
-        json out = json::object();
-        if (!p.allow.empty()) out["allow"] = p.allow;
-        if (!p.deny.empty()) out["deny"] = p.deny;
-        return out;
-    }
-
-    Permission permissionFromJson(const json& j) {
-        Permission p;
-        if (j.contains("allow")) p.allow = j["allow"].get<std::vector<std::string>>();
-        if (j.contains("deny")) p.deny = j["deny"].get<std::vector<std::string>>();
-        return p;
-    }
 
     // Go's checkPermission: "subject" or "subject queue"; queues only where
     // permitted (subscriptions), never a third token.
@@ -171,6 +158,27 @@ const Permissions& UserClaims::permissions() const { return impl_->permissions_;
 UserLimits& UserClaims::limits() { return impl_->limits_; }
 const UserLimits& UserClaims::limits() const { return impl_->limits_; }
 
+void UserClaims::setScoped(bool scoped) {
+    // Go's SetScoped: scoped users carry NO permissions or limits of their
+    // own (all zero — omitted on the wire); the server applies the scope's
+    // template. Unscoping restores the -1 no-limit defaults.
+    if (scoped) {
+        impl_->permissions_ = Permissions{};
+        impl_->limits_ = UserLimits{0, 0, 0, {}, {}, ""};
+    } else {
+        impl_->permissions_ = Permissions{};
+        impl_->limits_ = UserLimits{};
+    }
+}
+
+bool UserClaims::hasEmptyPermissions() const {
+    const auto& p = impl_->permissions_;
+    const auto& l = impl_->limits_;
+    return p.pub.empty() && p.sub.empty() && !p.resp && l.subs == 0 &&
+           l.data == 0 && l.payload == 0 && l.src.empty() && l.times.empty() &&
+           l.locale.empty();
+}
+
 std::string UserClaims::encode(const std::string& seed) const {
     using namespace internal;
     using json = nlohmann::json;
@@ -216,8 +224,8 @@ std::string UserClaims::encode(const std::string& seed) const {
     } else {
         nats_claims.erase("issuer_account");
     }
-    nats_claims["pub"] = permissionToJson(impl_->permissions_.pub);
-    nats_claims["sub"] = permissionToJson(impl_->permissions_.sub);
+    nats_claims["pub"] = internal::permissionToJson(impl_->permissions_.pub);
+    nats_claims["sub"] = internal::permissionToJson(impl_->permissions_.sub);
     if (impl_->permissions_.resp) {
         nats_claims["resp"] = {{"max", impl_->permissions_.resp->maxMsgs},
                                {"ttl", impl_->permissions_.resp->ttlNanos}};
@@ -363,8 +371,8 @@ std::unique_ptr<UserClaims> decodeUserClaims(const std::string& jwt) {
 
     // Typed permission/limit fields (fix-plan #1+#2)
     auto& perms = claims->impl_->permissions_;
-    if (nats.contains("pub")) perms.pub = permissionFromJson(nats["pub"]);
-    if (nats.contains("sub")) perms.sub = permissionFromJson(nats["sub"]);
+    if (nats.contains("pub")) perms.pub = internal::permissionFromJson(nats["pub"]);
+    if (nats.contains("sub")) perms.sub = internal::permissionFromJson(nats["sub"]);
     if (nats.contains("resp") && nats["resp"].is_object()) {
         perms.resp = ResponsePermission{nats["resp"].value("max", 0),
                                         nats["resp"].value("ttl", std::int64_t{0})};

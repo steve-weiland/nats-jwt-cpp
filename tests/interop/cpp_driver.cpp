@@ -81,6 +81,22 @@ int main([[maybe_unused]] int argc, char** argv) try {
         std::string restrictedJwt = rc.encode(askp->seedString());
         std::string restrictedCreds = jwt::formatUserConfig(restrictedJwt, rkp->seedString());
 
+        // a SCOPED signing key on the account: its template (pub demo.> only)
+        // governs users it issues — the scoped user's own JWT carries NO
+        // permissions (issueUserJWT), the server applies the template
+        auto scopedSK = nkeys::CreateAccount();
+        jwt::UserScope scope;
+        scope.key = scopedSK->publicString();
+        scope.role = "demo-only";
+        scope.permissions.pub.allow = {"demo.>"};
+        scope.permissions.sub.allow = {"_INBOX.>"};
+        received->setScope(scope);
+        accJwt = received->encode(oskp->seedString());  // re-sign WITH the scope
+        auto skp = nkeys::CreateUser();
+        std::string scopedUserJwt = jwt::issueUserJWT(
+            scopedSK->seedString(), akp->publicString(), skp->publicString(), "scoped");
+        std::string scopedCreds = jwt::formatUserConfig(scopedUserJwt, skp->seedString());
+
         // memory-resolver config, the Go README's resolver.conf
         std::string resolver = "operator: " + opJwt + "\n\n" +
                                "resolver: MEMORY\n" +
@@ -91,7 +107,7 @@ int main([[maybe_unused]] int argc, char** argv) try {
         for (auto& [n, c] : std::vector<std::pair<std::string, std::string>>{
                  {"op.jwt", opJwt}, {"acc.jwt", accJwt}, {"user.jwt", userJwt},
                  {"u.creds", creds}, {"r.creds", restrictedCreds},
-                 {"resolver.conf", resolver}})
+                 {"s.creds", scopedCreds}, {"resolver.conf", resolver}})
             std::ofstream(dir + "/" + n) << c;
         std::cout << "OK\n";
     } else if (mode == "richuser") { // dir → user token with full perms/limits
