@@ -9,6 +9,10 @@
 
 namespace jwt {
 
+/// Wildcard revocation subject — revokes every key issued at/before the
+/// revocation timestamp (Go: jwt.All).
+inline constexpr const char* RevokeAll = "*";
+
 /// JetStream limits (Go: JetStreamLimits) — 0 means disabled, -1 unlimited.
 /// On the wire these fields sit FLAT inside the account's "limits" object.
 struct JetStreamLimits {
@@ -89,6 +93,17 @@ public:
     /// Weighted subject mappings: from-subject → weighted destinations.
     [[nodiscard]] std::map<std::string, std::vector<WeightedMapping>>& mappings();
     [[nodiscard]] const std::map<std::string, std::vector<WeightedMapping>>& mappings() const;
+
+    /// Revokes every JWT for pubKey (or RevokeAll) issued at/before NOW.
+    void revoke(const std::string& pubKey);
+    /// Revokes every JWT for pubKey issued at/before unixTimestamp. A newer
+    /// existing revocation is kept (can't move a revocation into the future).
+    void revokeAt(const std::string& pubKey, std::int64_t unixTimestamp);
+    void clearRevocation(const std::string& pubKey);
+    /// True if pubKey (or RevokeAll) is revoked at/after claimIssuedAt —
+    /// pass the JWT's ISSUE time, never "now" (Go's warning applies here too).
+    [[nodiscard]] bool isRevoked(const std::string& pubKey, std::int64_t claimIssuedAt) const;
+    [[nodiscard]] const std::map<std::string, std::int64_t>& revocations() const;
 
     void setDescription(const std::string& description);
     [[nodiscard]] std::string description() const;

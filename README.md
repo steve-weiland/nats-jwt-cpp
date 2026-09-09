@@ -39,7 +39,8 @@ v1 token reading. Scoped signing keys ARE ported (`UserScope` +
 template is enforced against a real nats-server in CI. Account configuration
 is ported too: typed limits (JetStream + tiered), default permissions,
 weighted subject mappings, description/info — a conn=1 account refusing a
-second connection is likewise a CI gate.
+second connection is likewise a CI gate, as is a revoked user's creds being
+refused (revocation lists: `revoke`/`revokeAt`/`isRevoked` + `RevokeAll`).
 
 ## Quick Start
 

@@ -871,3 +871,79 @@ TEST(AccountConfigTest, ValidationRulesMatchGo) {
     clustered.mappings()["a.*"] = {{"b.*", 80, "east"}, {"c.*", 80, "west"}};
     EXPECT_NO_THROW((void)clustered.encode(akp->seedString()));
 }
+
+// ============================================================================
+// Revocation lists (fix-plan group 2) — Go semantics measured: Revoke keeps a
+// NEWER existing entry (can't move a revocation into the future); IsRevoked
+// compares against the claim's ISSUE time (ts >= iat — re-issuing after the
+// revocation timestamp makes the key valid again); "*" revokes all keys.
+// Wire: nats.revocations = {pubkey|"*": unix-ts}, omitempty.
+// ============================================================================
+
+TEST(RevocationTest, DecodesGoRevocations) {
+    auto ac = jwt::decodeAccountClaims(readFixture2("acc-revoked.jwt"));
+    const auto& revs = ac->revocations();
+    ASSERT_EQ(revs.size(), 2u);
+    ASSERT_EQ(revs.count(jwt::RevokeAll), 1u);
+    EXPECT_EQ(revs.at(jwt::RevokeAll), 1600000000);
+    for (const auto& [key, ts] : revs) {
+        if (key != jwt::RevokeAll) {
+            EXPECT_EQ(key[0], 'U');
+            EXPECT_EQ(ts, 1700000000);
+        }
+    }
+}
+
+TEST(RevocationTest, RevocationWireEqualsGo) {
+    // rebuild the golden's claims with the same keys → identical nats object
+    auto golden = jwt::decodeAccountClaims(readFixture2("acc-revoked.jwt"));
+    std::string userKey;
+    for (const auto& [key, ts] : golden->revocations()) {
+        if (key != jwt::RevokeAll) userKey = key;
+    }
+    jwt::AccountClaims ac(golden->subject());
+    ac.setName("rev");
+    ac.revokeAt(userKey, 1700000000);
+    ac.revokeAt(jwt::RevokeAll, 1600000000);
+    auto akp = nkeys::CreateAccount();
+    EXPECT_EQ(natsObjectOf(ac.encode(akp->seedString())),
+              natsObjectOf(readFixture2("acc-revoked.jwt")));
+
+    // and decode→re-encode of the golden itself survives equal
+    auto okp = nkeys::CreateOperator();
+    EXPECT_EQ(natsObjectOf(golden->encode(okp->seedString())),
+              natsObjectOf(readFixture2("acc-revoked.jwt")));
+}
+
+TEST(RevocationTest, SemanticsMatchGo) {
+    auto akp = nkeys::CreateAccount();
+    auto ukp = nkeys::CreateUser();
+    jwt::AccountClaims ac(akp->publicString());
+    const auto u = ukp->publicString();
+
+    // revoke keeps the NEWER entry
+    ac.revokeAt(u, 2000);
+    ac.revokeAt(u, 1000);
+    EXPECT_EQ(ac.revocations().at(u), 2000);
+    ac.revokeAt(u, 3000);
+    EXPECT_EQ(ac.revocations().at(u), 3000);
+
+    // isRevoked: revocation ts >= claim ISSUE time
+    EXPECT_TRUE(ac.isRevoked(u, 3000));   // issued at the revocation instant
+    EXPECT_TRUE(ac.isRevoked(u, 2999));
+    EXPECT_FALSE(ac.isRevoked(u, 3001));  // re-issued after → valid again
+
+    // wildcard covers everyone issued at/before its timestamp
+    auto other = nkeys::CreateUser()->publicString();
+    EXPECT_FALSE(ac.isRevoked(other, 100));
+    ac.revokeAt(jwt::RevokeAll, 500);
+    EXPECT_TRUE(ac.isRevoked(other, 100));
+    EXPECT_FALSE(ac.isRevoked(other, 501));
+
+    ac.clearRevocation(u);
+    EXPECT_EQ(ac.revocations().count(u), 0u);
+
+    // no revocations key on the wire when empty
+    jwt::AccountClaims clean(akp->publicString());
+    EXPECT_FALSE(natsObjectOf(clean.encode(akp->seedString())).contains("revocations"));
+}

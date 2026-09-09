@@ -139,6 +139,9 @@ weight-0-means-100 rule, description/info_url) — account conn limits are
 real-server-enforced (e2e check 5). Divergence, documented: Go's account
 Validate is advisory ("don't block encoding" per its own tests); we enforce
 mapping/tier rules at encode, consistent with the user-claims port.
+Revocation lists are ported (revoke/revokeAt/clearRevocation/isRevoked +
+RevokeAll; issue-time semantics — never pass "now" to isRevoked) —
+real-server-enforced (e2e check 6).
 The library is consumable four ways (find_package(natsjwt) static/shared,
 pkg-config, add_subdirectory embed — all gated by `tests/packaging/test.sh`,
 which installs a real nkeys-cpp and thereby also exercises the system-nkeys

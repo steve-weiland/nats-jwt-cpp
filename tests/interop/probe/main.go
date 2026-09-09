@@ -103,6 +103,21 @@ func main() {
 		}
 		fmt.Printf("subs=%d data=%d payload=%d\n", uc.Limits.Subs, uc.Limits.Data, uc.Limits.Payload)
 		fmt.Printf("src=%v times=%v locale=%s\n", uc.Limits.Src, uc.Limits.Times, uc.Limits.Locale)
+	case "genrevaccount": // dir → account with a revocation list (fixed timestamps)
+		dir := os.Args[2]
+		akp, _ := nkeys.CreateAccount()
+		apk, _ := akp.PublicKey()
+		ukp, _ := nkeys.CreateUser()
+		upk, _ := ukp.PublicKey()
+		ac := jwt.NewAccountClaims(apk)
+		ac.Name = "rev"
+		ac.RevokeAt(upk, time.Unix(1700000000, 0))
+		ac.RevokeAt(jwt.All, time.Unix(1600000000, 0))
+		token, err := ac.Encode(akp)
+		must(err)
+		must(os.WriteFile(dir+"/acc-revoked.jwt", []byte(token), 0600))
+		must(os.WriteFile(dir+"/acc-revoked.upub", []byte(upk), 0600))
+		fmt.Println("OK")
 	case "genrichaccount": // dir → account with custom limits/JS/mappings/info + a tiered variant
 		dir := os.Args[2]
 		akp, _ := nkeys.CreateAccount()

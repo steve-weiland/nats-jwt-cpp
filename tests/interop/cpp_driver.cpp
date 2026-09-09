@@ -14,6 +14,7 @@
 //                             a memory-resolver nats-server
 #include <jwt/jwt.hpp>
 #include <nkeys/nkeys.hpp>
+#include <chrono>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -110,6 +111,17 @@ int main([[maybe_unused]] int argc, char** argv) try {
         std::string limitedUserJwt = luc.encode(lkp->seedString());
         std::string limitedCreds = jwt::formatUserConfig(limitedUserJwt, lukp->seedString());
 
+        // a REVOKED variant of the main account: the restricted user is
+        // revoked as of now — the e2e boots a second server with this
+        // resolver and proves the server refuses the revoked creds
+        received->revokeAt(rkp->publicString(),
+                           std::chrono::duration_cast<std::chrono::seconds>(
+                               std::chrono::system_clock::now().time_since_epoch())
+                                   .count() +
+                               5);
+        std::string revokedAccJwt = received->encode(oskp->seedString());
+        received->clearRevocation(rkp->publicString());  // main conf stays clean
+
         // memory-resolver config, the Go README's resolver.conf
         std::string resolver = "operator: " + opJwt + "\n\n" +
                                "resolver: MEMORY\n" +
@@ -118,11 +130,18 @@ int main([[maybe_unused]] int argc, char** argv) try {
                                "\t" + lkp->publicString() + ": " + limitedAccJwt + "\n" +
                                "}\n";
 
+        std::string revokedResolver = "operator: " + opJwt + "\n\n" +
+                                      "resolver: MEMORY\n" +
+                                      "resolver_preload: {\n" +
+                                      "\t" + akp->publicString() + ": " + revokedAccJwt + "\n" +
+                                      "}\n";
+
         for (auto& [n, c] : std::vector<std::pair<std::string, std::string>>{
                  {"op.jwt", opJwt}, {"acc.jwt", accJwt}, {"user.jwt", userJwt},
                  {"u.creds", creds}, {"r.creds", restrictedCreds},
                  {"s.creds", scopedCreds}, {"l.creds", limitedCreds},
-                 {"resolver.conf", resolver}})
+                 {"resolver.conf", resolver},
+                 {"resolver-revoked.conf", revokedResolver}})
             std::ofstream(dir + "/" + n) << c;
         std::cout << "OK\n";
     } else if (mode == "richuser") { // dir → user token with full perms/limits

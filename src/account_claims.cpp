@@ -5,6 +5,7 @@
 #include "jwt_utils.hpp"
 #include "scope_serialization.hpp"
 #include <algorithm>
+#include <chrono>
 #include <map>
 #include <nkeys/nkeys.hpp>
 #include <nlohmann/json.hpp>
@@ -136,6 +137,7 @@ public:
     AccountLimits limits_;              // Go defaults: -1 no-limits (see encode)
     Permissions defaultPermissions_;
     std::map<std::string, std::vector<WeightedMapping>> mappings_;
+    std::map<std::string, std::int64_t> revocations_;
     std::string description_;
     std::string infoURL_;
     std::string subject_;
@@ -194,6 +196,35 @@ std::map<std::string, std::vector<WeightedMapping>>& AccountClaims::mappings() {
 const std::map<std::string, std::vector<WeightedMapping>>& AccountClaims::mappings() const {
     return impl_->mappings_;
 }
+void AccountClaims::revoke(const std::string& pubKey) {
+    revokeAt(pubKey, std::chrono::duration_cast<std::chrono::seconds>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count());
+}
+
+void AccountClaims::revokeAt(const std::string& pubKey, std::int64_t unixTimestamp) {
+    // A newer existing revocation is kept — a revocation can be moved into
+    // the past but never into the future (Go: RevocationList.Revoke).
+    auto it = impl_->revocations_.find(pubKey);
+    if (it != impl_->revocations_.end() && it->second > unixTimestamp) return;
+    impl_->revocations_[pubKey] = unixTimestamp;
+}
+
+void AccountClaims::clearRevocation(const std::string& pubKey) {
+    impl_->revocations_.erase(pubKey);
+}
+
+bool AccountClaims::isRevoked(const std::string& pubKey, std::int64_t claimIssuedAt) const {
+    auto all = impl_->revocations_.find(RevokeAll);
+    if (all != impl_->revocations_.end() && all->second >= claimIssuedAt) return true;
+    auto it = impl_->revocations_.find(pubKey);
+    return it != impl_->revocations_.end() && it->second >= claimIssuedAt;
+}
+
+const std::map<std::string, std::int64_t>& AccountClaims::revocations() const {
+    return impl_->revocations_;
+}
+
 void AccountClaims::setDescription(const std::string& description) {
     impl_->description_ = description;
 }
@@ -260,6 +291,8 @@ std::string AccountClaims::encode(const std::string& seed) const {
     } else {
         nats_claims.erase("mappings");
     }
+    if (!impl_->revocations_.empty()) nats_claims["revocations"] = impl_->revocations_;
+    else nats_claims.erase("revocations");
     if (!impl_->description_.empty()) nats_claims["description"] = impl_->description_;
     else nats_claims.erase("description");
     if (!impl_->infoURL_.empty()) nats_claims["info_url"] = impl_->infoURL_;
@@ -427,6 +460,11 @@ std::unique_ptr<AccountClaims> decodeAccountClaims(const std::string& jwt) {
                                entry.value("cluster", "")});
             }
             claims->impl_->mappings_[from] = std::move(wms);
+        }
+    }
+    if (nats.contains("revocations") && nats["revocations"].is_object()) {
+        for (const auto& [key, ts] : nats["revocations"].items()) {
+            claims->impl_->revocations_[key] = ts.get<std::int64_t>();
         }
     }
     claims->impl_->description_ = nats.value("description", "");

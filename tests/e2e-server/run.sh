@@ -18,7 +18,9 @@
 #   5. account-limit enforcement: a second account minted with conn=1 —
 #      one connection holds, the second is refused ("maximum account active
 #      connections exceeded", the error that exposed the defaults bug)
-#   6. negative control: the same connection WITHOUT creds is refused
+#   6. revocation enforcement: a resolver variant revokes the restricted
+#      user — its creds are refused while others still work
+#   7. negative control: the same connection WITHOUT creds is refused
 #      (proves the server is actually enforcing the operator-mode auth our
 #      chain is supposed to satisfy — without this, check 2 could pass
 #      against an open server)
@@ -38,7 +40,7 @@ SRV="natsjwt-server-$$"
 
 WORK=$(mktemp -d)
 cleanup() {
-    docker rm -f "$SRV" "$SRV-resp" "$SRV-hold" >/dev/null 2>&1 || true
+    docker rm -f "$SRV" "$SRV-resp" "$SRV-hold" "$SRV-rev" >/dev/null 2>&1 || true
     docker network rm "$NET" >/dev/null 2>&1 || true
     rm -rf "$WORK"
 }
@@ -50,7 +52,7 @@ fail() { echo "  FAIL: $1" >&2; exit 1; }
 
 echo "e2e-server: minting the README trust chain"
 "$CPP" bootstrap "$WORK" >/dev/null
-chmod 644 "$WORK"/u.creds "$WORK"/r.creds "$WORK"/s.creds "$WORK"/l.creds "$WORK"/resolver.conf
+chmod 644 "$WORK"/u.creds "$WORK"/r.creds "$WORK"/s.creds "$WORK"/l.creds "$WORK"/resolver.conf "$WORK"/resolver-revoked.conf
 
 docker network create "$NET" >/dev/null
 docker run -d --name "$SRV" --network "$NET" \
@@ -134,7 +136,25 @@ docker logs "$SRV" 2>&1 | grep -q "maximum account active connections exceeded" 
 docker rm -f "$SRV-hold" >/dev/null 2>&1 || true
 check "ACCOUNT limit enforced: conn=1 account refuses a second connection"
 
-# 6 ── negative control: no creds → refused
+# 6 ── REVOCATION enforced: a second server whose resolver carries the same
+# account with the restricted user REVOKED — its creds die, others still work
+docker run -d --name "$SRV-rev" --network "$NET" \
+    -v "$WORK":/conf:ro "$NATS_IMG" -c /conf/resolver-revoked.conf >/dev/null
+i=0
+until docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+        nats --server nats://"$SRV-rev":4222 --creds /w/u.creds rtt >/dev/null 2>&1; do
+    i=$((i+1))
+    [ "$i" -le 15 ] || fail "revoked-resolver server did not become ready"
+    sleep 1
+done
+if docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+        nats --server nats://"$SRV-rev":4222 --creds /w/r.creds rtt >/dev/null 2>&1; then
+    fail "REVOKED user's creds were accepted"
+fi
+docker rm -f "$SRV-rev" >/dev/null 2>&1 || true
+check "REVOCATION enforced: revoked user's creds refused, unrevoked user still fine"
+
+# 7 ── negative control: no creds → refused
 if docker run --rm --network "$NET" "$BOX_IMG" \
         nats --server nats://"$SRV":4222 rtt >/dev/null 2>&1; then
     fail "server accepted a connection WITHOUT credentials — auth not enforced"
