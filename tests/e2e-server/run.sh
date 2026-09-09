@@ -18,9 +18,11 @@
 #   5. account-limit enforcement: a second account minted with conn=1 —
 #      one connection holds, the second is refused ("maximum account active
 #      connections exceeded", the error that exposed the defaults bug)
-#   6. revocation enforcement: a resolver variant revokes the restricted
+#   6. cross-account private export: a token_req service exported by a
+#      second account, imported via a C++-minted activation, served across
+#   7. revocation enforcement: a resolver variant revokes the restricted
 #      user — its creds are refused while others still work
-#   7. negative control: the same connection WITHOUT creds is refused
+#   8. negative control: the same connection WITHOUT creds is refused
 #      (proves the server is actually enforcing the operator-mode auth our
 #      chain is supposed to satisfy — without this, check 2 could pass
 #      against an open server)
@@ -40,7 +42,7 @@ SRV="natsjwt-server-$$"
 
 WORK=$(mktemp -d)
 cleanup() {
-    docker rm -f "$SRV" "$SRV-resp" "$SRV-hold" "$SRV-rev" >/dev/null 2>&1 || true
+    docker rm -f "$SRV" "$SRV-resp" "$SRV-hold" "$SRV-rev" "$SRV-billing" >/dev/null 2>&1 || true
     docker network rm "$NET" >/dev/null 2>&1 || true
     rm -rf "$WORK"
 }
@@ -52,7 +54,7 @@ fail() { echo "  FAIL: $1" >&2; exit 1; }
 
 echo "e2e-server: minting the README trust chain"
 "$CPP" bootstrap "$WORK" >/dev/null
-chmod 644 "$WORK"/u.creds "$WORK"/r.creds "$WORK"/s.creds "$WORK"/l.creds "$WORK"/resolver.conf "$WORK"/resolver-revoked.conf
+chmod 644 "$WORK"/u.creds "$WORK"/r.creds "$WORK"/s.creds "$WORK"/l.creds "$WORK"/x.creds "$WORK"/resolver.conf "$WORK"/resolver-revoked.conf
 
 docker network create "$NET" >/dev/null
 docker run -d --name "$SRV" --network "$NET" \
@@ -136,7 +138,22 @@ docker logs "$SRV" 2>&1 | grep -q "maximum account active connections exceeded" 
 docker rm -f "$SRV-hold" >/dev/null 2>&1 || true
 check "ACCOUNT limit enforced: conn=1 account refuses a second connection"
 
-# 6 ── REVOCATION enforced: a second server whose resolver carries the same
+# 6 ── CROSS-ACCOUNT private export: account X exports billing.charge
+# (token_req); the main account imports it via a C++-minted ACTIVATION under
+# ext.billing.charge. A request from the main account's user must cross into
+# X and come back — proving export, activation, and import all hold.
+docker rm -f "$SRV-billing" >/dev/null 2>&1 || true
+docker run -d --name "$SRV-billing" --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" sh -c "
+    nats --server nats://$SRV:4222 --creds /w/x.creds reply billing.charge paid --count 4 &
+    sleep 30" >/dev/null
+sleep 2
+out=$(docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+    nats --server nats://"$SRV":4222 --creds /w/u.creds request ext.billing.charge 100 2>/dev/null || true)
+printf '%s' "$out" | grep -q "paid" || fail "cross-account service call failed: $out"
+docker rm -f "$SRV-billing" >/dev/null 2>&1 || true
+check "CROSS-ACCOUNT private export served (export + activation + import)"
+
+# 7 ── REVOCATION enforced: a second server whose resolver carries the same
 # account with the restricted user REVOKED — its creds die, others still work
 docker run -d --name "$SRV-rev" --network "$NET" \
     -v "$WORK":/conf:ro "$NATS_IMG" -c /conf/resolver-revoked.conf >/dev/null
@@ -154,7 +171,7 @@ fi
 docker rm -f "$SRV-rev" >/dev/null 2>&1 || true
 check "REVOCATION enforced: revoked user's creds refused, unrevoked user still fine"
 
-# 7 ── negative control: no creds → refused
+# 8 ── negative control: no creds → refused
 if docker run --rm --network "$NET" "$BOX_IMG" \
         nats --server nats://"$SRV":4222 rtt >/dev/null 2>&1; then
     fail "server accepted a connection WITHOUT credentials — auth not enforced"

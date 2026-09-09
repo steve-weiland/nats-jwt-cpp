@@ -126,8 +126,8 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
 
 ## Known gaps
 
-Scope cuts are documented in the README (account imports/exports,
-activations, bearer/conn-type user flags, aud/tags, v1 reading). User permissions/limits ARE ported — real-server-enforced in CI
+Scope cuts are documented in the README (bearer/conn-type user flags,
+aud/tags, v1 reading, auth-callout, external signers, activation hashID). User permissions/limits ARE ported — real-server-enforced in CI
 (e2e check 3) — creds parse/decorate is ported (creds.hpp: parse trio
 delegates to nkeys-cpp; decorate is authenticated and byte-golden vs Go) —
 and scoped signing keys are ported (UserScope in a SORTED mixed signing_keys
@@ -141,7 +141,12 @@ Validate is advisory ("don't block encoding" per its own tests); we enforce
 mapping/tier rules at encode, consistent with the user-claims port.
 Revocation lists are ported (revoke/revokeAt/clearRevocation/isRevoked +
 RevokeAll; issue-time semantics — never pass "now" to isRevoked) —
-real-server-enforced (e2e check 6).
+real-server-enforced. Cross-account sharing is ported: typed Export/Import on
+accounts and ActivationClaims as a fourth claim type (decode dispatch +
+decorateJWT "ACTIVATION"); import tokens are cross-checked against the
+import's account at encode; latency sampling 0 serializes as "headers";
+response_threshold is NANOSECONDS. The e2e serves a token_req export across
+accounts through a C++-minted activation.
 The library is consumable four ways (find_package(natsjwt) static/shared,
 pkg-config, add_subdirectory embed — all gated by `tests/packaging/test.sh`,
 which installs a real nkeys-cpp and thereby also exercises the system-nkeys

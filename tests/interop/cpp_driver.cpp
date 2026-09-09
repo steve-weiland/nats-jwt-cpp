@@ -111,6 +111,32 @@ int main([[maybe_unused]] int argc, char** argv) try {
         std::string limitedUserJwt = luc.encode(lkp->seedString());
         std::string limitedCreds = jwt::formatUserConfig(limitedUserJwt, lukp->seedString());
 
+        // a cross-account PRIVATE export: account X exports billing.charge as
+        // a token_req service; the main account imports it under
+        // ext.billing.charge carrying X's activation grant — the e2e proves a
+        // request crosses accounts through the C++-minted import chain
+        auto xkp = nkeys::CreateAccount();
+        jwt::AccountClaims xc(xkp->publicString());
+        xc.setName("X");
+        xc.exports().push_back({.name = "billing", .subject = "billing.charge",
+                                .type = jwt::ExportType::Service, .tokenReq = true});
+        std::string exporterJwt = xc.encode(oskp->seedString());
+        auto xukp = nkeys::CreateUser();
+        jwt::UserClaims xuc(xukp->publicString());
+        std::string exporterUserJwt = xuc.encode(xkp->seedString());
+        std::string exporterCreds = jwt::formatUserConfig(exporterUserJwt, xukp->seedString());
+
+        jwt::ActivationClaims grant(akp->publicString());  // grant to the main account
+        grant.setName("billing-grant");
+        grant.setImportSubject("billing.charge");
+        grant.setImportType(jwt::ExportType::Service);
+        std::string grantJwt = grant.encode(xkp->seedString());
+        received->imports().push_back({.name = "billing", .subject = "billing.charge",
+                                       .account = xkp->publicString(), .token = grantJwt,
+                                       .localSubject = "ext.billing.charge",
+                                       .type = jwt::ExportType::Service});
+        accJwt = received->encode(oskp->seedString());  // re-sign WITH the import
+
         // a REVOKED variant of the main account: the restricted user is
         // revoked as of now — the e2e boots a second server with this
         // resolver and proves the server refuses the revoked creds
@@ -128,6 +154,7 @@ int main([[maybe_unused]] int argc, char** argv) try {
                                "resolver_preload: {\n" +
                                "\t" + akp->publicString() + ": " + accJwt + "\n" +
                                "\t" + lkp->publicString() + ": " + limitedAccJwt + "\n" +
+                               "\t" + xkp->publicString() + ": " + exporterJwt + "\n" +
                                "}\n";
 
         std::string revokedResolver = "operator: " + opJwt + "\n\n" +
@@ -140,6 +167,7 @@ int main([[maybe_unused]] int argc, char** argv) try {
                  {"op.jwt", opJwt}, {"acc.jwt", accJwt}, {"user.jwt", userJwt},
                  {"u.creds", creds}, {"r.creds", restrictedCreds},
                  {"s.creds", scopedCreds}, {"l.creds", limitedCreds},
+                 {"x.creds", exporterCreds},
                  {"resolver.conf", resolver},
                  {"resolver-revoked.conf", revokedResolver}})
             std::ofstream(dir + "/" + n) << c;

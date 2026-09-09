@@ -38,6 +38,8 @@ std::string decorateJWT(const std::string& jwt) {
         kind = "OPERATOR";
     } else if (dynamic_cast<const AccountClaims*>(claims.get())) {
         kind = "ACCOUNT";
+    } else if (dynamic_cast<const ActivationClaims*>(claims.get())) {
+        kind = "ACTIVATION";
     } else {
         kind = "USER";
     }

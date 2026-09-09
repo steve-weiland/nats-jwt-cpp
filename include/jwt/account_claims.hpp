@@ -51,6 +51,46 @@ struct WeightedMapping {
     std::string cluster;
 };
 
+/// Export/import kind (Go: ExportType) — "stream" or "service" on the wire.
+enum class ExportType { Unknown, Stream, Service };
+
+/// Latency tracking config for a service export (Go: ServiceLatency).
+/// sampling is 1..100 (percent) or 0, which serializes as "headers".
+struct ServiceLatency {
+    int sampling = 0;
+    std::string results;
+};
+
+/// A subject this account offers to other accounts (Go: Export).
+struct Export {
+    std::string name;
+    std::string subject;
+    ExportType type = ExportType::Unknown;
+    bool tokenReq = false;                              ///< private: importers need an activation token
+    std::map<std::string, std::int64_t> revocations;    ///< revoked activations
+    std::string responseType;                           ///< services: "", "Singleton", "Stream", "Chunked"
+    std::int64_t responseThresholdNanos = 0;            ///< services only; Go time.Duration
+    std::optional<ServiceLatency> latency;              ///< services only
+    unsigned accountTokenPosition = 0;                  ///< wildcard subjects only
+    bool advertise = false;
+    bool allowTrace = false;                            ///< services only (exports)
+    std::string description;
+    std::string infoURL;
+};
+
+/// A subject this account consumes from another account (Go: Import).
+struct Import {
+    std::string name;
+    std::string subject;
+    std::string account;        ///< the exporting account's public key
+    std::string token;          ///< activation JWT (required for private exports)
+    std::string to;             ///< deprecated — use localSubject
+    std::string localSubject;   ///< local name for the imported subject
+    ExportType type = ExportType::Unknown;
+    bool share = false;         ///< services only: share request info for latency
+    bool allowTrace = false;    ///< streams only (imports)
+};
+
 /// Account-level claims (middle of trust hierarchy)
 class AccountClaims : public Claims {
 public:
@@ -104,6 +144,12 @@ public:
     /// pass the JWT's ISSUE time, never "now" (Go's warning applies here too).
     [[nodiscard]] bool isRevoked(const std::string& pubKey, std::int64_t claimIssuedAt) const;
     [[nodiscard]] const std::map<std::string, std::int64_t>& revocations() const;
+
+    /// Subjects offered to / consumed from other accounts.
+    [[nodiscard]] std::vector<Export>& exports();
+    [[nodiscard]] const std::vector<Export>& exports() const;
+    [[nodiscard]] std::vector<Import>& imports();
+    [[nodiscard]] const std::vector<Import>& imports() const;
 
     void setDescription(const std::string& description);
     [[nodiscard]] std::string description() const;

@@ -32,15 +32,17 @@ real nats-server in CI — encode/decode/verify, timing + chain validation,
 creds generation AND parsing (`parseDecoratedJWT`/`parseDecoratedNKey`/
 `parseDecoratedUserNKey`, plus `decorateJWT`/`decorateSeed`, byte-identical to
 Go). Un-ported fields survive decode→re-encode untouched. NOT ported (by
-choice): account limits/imports/exports beyond the defaults, activation
-claims, scoped signing keys, bearer/connection-type flags, audience/tags,
-v1 token reading. Scoped signing keys ARE ported (`UserScope` +
+choice): bearer/connection-type user flags, audience/tags, v1 token reading,
+auth-callout claims, external signers, activation hashID. Scoped signing keys ARE ported (`UserScope` +
 `issueUserJWT`) — a permissionless scoped user governed by the account's
 template is enforced against a real nats-server in CI. Account configuration
 is ported too: typed limits (JetStream + tiered), default permissions,
 weighted subject mappings, description/info — a conn=1 account refusing a
 second connection is likewise a CI gate, as is a revoked user's creds being
 refused (revocation lists: `revoke`/`revokeAt`/`isRevoked` + `RevokeAll`).
+Cross-account sharing is ported — typed exports/imports and `ActivationClaims`
+— with a token-gated export served across accounts on a real nats-server as
+the CI gate.
 
 ## Quick Start
 

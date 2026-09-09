@@ -103,6 +103,61 @@ func main() {
 		}
 		fmt.Printf("subs=%d data=%d payload=%d\n", uc.Limits.Subs, uc.Limits.Data, uc.Limits.Payload)
 		fmt.Printf("src=%v times=%v locale=%s\n", uc.Limits.Src, uc.Limits.Times, uc.Limits.Locale)
+	case "genxaccount": // dir → exporter + importer accounts + activation claim
+		dir := os.Args[2]
+		akp, _ := nkeys.CreateAccount() // exporter A
+		apk, _ := akp.PublicKey()
+		bkp, _ := nkeys.CreateAccount() // importer B
+		bpk, _ := bkp.PublicKey()
+		ukp, _ := nkeys.CreateUser()
+		upk, _ := ukp.PublicKey()
+
+		ea := jwt.NewAccountClaims(apk)
+		ea.Name = "exporter"
+		ea.Exports = jwt.Exports{
+			&jwt.Export{
+				Name: "billing", Subject: "billing.charge", Type: jwt.Service,
+				TokenReq: true, ResponseType: jwt.ResponseTypeSingleton,
+				ResponseThreshold: 2 * time.Second,
+				Latency: &jwt.ServiceLatency{Sampling: 40, Results: "billing.latency"},
+				AccountTokenPosition: 0, AllowTrace: true,
+			},
+			&jwt.Export{
+				Name: "ticker", Subject: "ticks.>", Type: jwt.Stream,
+				Advertise: true,
+			},
+		}
+		ea.Exports[0].Revocations = jwt.RevocationList{upk: 1700000000}
+		exporterJWT, err := ea.Encode(akp)
+		must(err)
+
+		act := jwt.NewActivationClaims(bpk) // grant TO account B
+		act.Name = "billing-grant"
+		act.ImportSubject = "billing.charge"
+		act.ImportType = jwt.Service
+		actJWT, err := act.Encode(akp) // issued by exporter A
+		must(err)
+
+		ib := jwt.NewAccountClaims(bpk)
+		ib.Name = "importer"
+		ib.Imports = jwt.Imports{
+			&jwt.Import{
+				Name: "billing", Subject: "billing.charge", Account: apk,
+				Token: actJWT, LocalSubject: "acme.billing.charge",
+				Type: jwt.Service, Share: true,
+			},
+			&jwt.Import{
+				Name: "ticker", Subject: "ticks.>", Account: apk,
+				Type: jwt.Stream, AllowTrace: true,
+			},
+		}
+		importerJWT, err := ib.Encode(bkp)
+		must(err)
+
+		must(os.WriteFile(dir+"/acc-exports.jwt", []byte(exporterJWT), 0600))
+		must(os.WriteFile(dir+"/acc-imports.jwt", []byte(importerJWT), 0600))
+		must(os.WriteFile(dir+"/activation.jwt", []byte(actJWT), 0600))
+		fmt.Println("OK")
 	case "genrevaccount": // dir → account with a revocation list (fixed timestamps)
 		dir := os.Args[2]
 		akp, _ := nkeys.CreateAccount()

@@ -1,4 +1,5 @@
 #include "jwt/account_claims.hpp"
+#include "jwt/activation_claims.hpp"
 #include "jwt/jwt_constants.hpp"
 #include "jwt/jwt_errors.hpp"
 #include "base64url.hpp"
@@ -119,6 +120,179 @@ namespace {
         }
     }
 
+    const char* exportTypeStr(ExportType t) {
+        switch (t) {
+            case ExportType::Stream: return "stream";
+            case ExportType::Service: return "service";
+            default: return "unknown";
+        }
+    }
+
+    ExportType exportTypeFrom(const std::string& s) {
+        if (s == "stream") return ExportType::Stream;
+        if (s == "service") return ExportType::Service;
+        return ExportType::Unknown;
+    }
+
+    json exportToJson(const Export& e) {
+        json out = json::object();
+        if (!e.name.empty()) out["name"] = e.name;
+        if (!e.subject.empty()) out["subject"] = e.subject;
+        if (e.type != ExportType::Unknown) out["type"] = exportTypeStr(e.type);
+        if (e.tokenReq) out["token_req"] = true;
+        if (!e.revocations.empty()) out["revocations"] = e.revocations;
+        if (!e.responseType.empty()) out["response_type"] = e.responseType;
+        if (e.responseThresholdNanos != 0) out["response_threshold"] = e.responseThresholdNanos;
+        if (e.latency) {
+            // both fields always present; sampling 0 serializes as "headers"
+            json lat = json::object();
+            if (e.latency->sampling == 0) lat["sampling"] = "headers";
+            else lat["sampling"] = e.latency->sampling;
+            lat["results"] = e.latency->results;
+            out["service_latency"] = lat;
+        }
+        if (e.accountTokenPosition != 0) out["account_token_position"] = e.accountTokenPosition;
+        if (e.advertise) out["advertise"] = true;
+        if (e.allowTrace) out["allow_trace"] = true;
+        if (!e.description.empty()) out["description"] = e.description;
+        if (!e.infoURL.empty()) out["info_url"] = e.infoURL;
+        return out;
+    }
+
+    Export exportFromJson(const json& j) {
+        Export e;
+        e.name = j.value("name", "");
+        e.subject = j.value("subject", "");
+        e.type = exportTypeFrom(j.value("type", ""));
+        e.tokenReq = j.value("token_req", false);
+        if (j.contains("revocations") && j["revocations"].is_object()) {
+            for (const auto& [k, v] : j["revocations"].items()) {
+                e.revocations[k] = v.get<std::int64_t>();
+            }
+        }
+        e.responseType = j.value("response_type", "");
+        e.responseThresholdNanos = j.value("response_threshold", std::int64_t{0});
+        if (j.contains("service_latency") && j["service_latency"].is_object()) {
+            const auto& lat = j["service_latency"];
+            ServiceLatency sl;
+            if (lat.contains("sampling") && lat["sampling"].is_string()) sl.sampling = 0;
+            else sl.sampling = lat.value("sampling", 0);
+            sl.results = lat.value("results", "");
+            e.latency = sl;
+        }
+        e.accountTokenPosition = j.value("account_token_position", 0u);
+        e.advertise = j.value("advertise", false);
+        e.allowTrace = j.value("allow_trace", false);
+        e.description = j.value("description", "");
+        e.infoURL = j.value("info_url", "");
+        return e;
+    }
+
+    json importToJson(const Import& i) {
+        json out = json::object();
+        if (!i.name.empty()) out["name"] = i.name;
+        if (!i.subject.empty()) out["subject"] = i.subject;
+        if (!i.account.empty()) out["account"] = i.account;
+        if (!i.token.empty()) out["token"] = i.token;
+        if (!i.to.empty()) out["to"] = i.to;
+        if (!i.localSubject.empty()) out["local_subject"] = i.localSubject;
+        if (i.type != ExportType::Unknown) out["type"] = exportTypeStr(i.type);
+        if (i.share) out["share"] = true;
+        if (i.allowTrace) out["allow_trace"] = true;
+        return out;
+    }
+
+    Import importFromJson(const json& j) {
+        Import i;
+        i.name = j.value("name", "");
+        i.subject = j.value("subject", "");
+        i.account = j.value("account", "");
+        i.token = j.value("token", "");
+        i.to = j.value("to", "");
+        i.localSubject = j.value("local_subject", "");
+        i.type = exportTypeFrom(j.value("type", ""));
+        i.share = j.value("share", false);
+        i.allowTrace = j.value("allow_trace", false);
+        return i;
+    }
+
+    // Go's Export.Validate / Import.Validate — enforced at encode (Go's are
+    // advisory), matching the rest of this port.
+    void validateExportsImports(const std::vector<Export>& exports,
+                                const std::vector<Import>& imports) {
+        for (const auto& e : exports) {
+            if (e.type != ExportType::Stream && e.type != ExportType::Service) {
+                throw InvalidClaimsError("invalid export type for \"" + e.subject + "\"");
+            }
+            if (e.type == ExportType::Stream) {
+                if (!e.responseType.empty()) {
+                    throw InvalidClaimsError("invalid response type for stream \"" + e.subject + "\"");
+                }
+                if (e.allowTrace) {
+                    throw InvalidClaimsError("AllowTrace only valid for service export");
+                }
+                if (e.latency) {
+                    throw InvalidClaimsError("latency tracking only permitted for services");
+                }
+                if (e.responseThresholdNanos > 0) {
+                    throw InvalidClaimsError("response threshold only valid for services");
+                }
+            } else {
+                if (!e.responseType.empty() && e.responseType != "Singleton" &&
+                    e.responseType != "Stream" && e.responseType != "Chunked") {
+                    throw InvalidClaimsError("invalid response type for service: \"" +
+                                             e.responseType + "\"");
+                }
+            }
+            if (e.responseThresholdNanos < 0) {
+                throw InvalidClaimsError("negative response threshold is invalid");
+            }
+            if (e.latency && (e.latency->sampling < 0 || e.latency->sampling > 100)) {
+                throw InvalidClaimsError("sampling percentage needs to be between 1-100 (or 0 for headers)");
+            }
+            if (e.accountTokenPosition > 0) {
+                if (e.subject.find('*') == std::string::npos &&
+                    e.subject.find('>') == std::string::npos) {
+                    throw InvalidClaimsError(
+                        "Account Token Position can only be used with wildcard subjects");
+                }
+            }
+        }
+        for (const auto& i : imports) {
+            if (i.type != ExportType::Stream && i.type != ExportType::Service) {
+                throw InvalidClaimsError("invalid import type for \"" + i.subject + "\"");
+            }
+            if (i.type == ExportType::Service && i.allowTrace) {
+                throw InvalidClaimsError("AllowTrace only valid for stream import");
+            }
+            if (i.account.empty()) {
+                throw InvalidClaimsError("account to import from is not specified");
+            }
+            if (!i.localSubject.empty() && !i.to.empty()) {
+                throw InvalidClaimsError("Local Subject replaces To");
+            }
+            if (i.share && i.type != ExportType::Service) {
+                throw InvalidClaimsError(
+                    "sharing information (for latency tracking) is only valid for services");
+            }
+            if (!i.token.empty()) {
+                std::unique_ptr<ActivationClaims> act;
+                try {
+                    act = decodeActivationClaims(i.token);
+                } catch (const Error&) {
+                    throw InvalidClaimsError("import \"" + i.subject +
+                                             "\" contains an invalid activation token");
+                }
+                const auto issuerAccount = act->issuerAccount();
+                if (act->issuer() != i.account &&
+                    (!issuerAccount || *issuerAccount != i.account)) {
+                    throw InvalidClaimsError("activation token doesn't match account for import \"" +
+                                             i.subject + "\"");
+                }
+            }
+        }
+    }
+
 } // namespace
 
 class AccountClaims::Impl {
@@ -137,6 +311,8 @@ public:
     AccountLimits limits_;              // Go defaults: -1 no-limits (see encode)
     Permissions defaultPermissions_;
     std::map<std::string, std::vector<WeightedMapping>> mappings_;
+    std::vector<Export> exports_;
+    std::vector<Import> imports_;
     std::map<std::string, std::int64_t> revocations_;
     std::string description_;
     std::string infoURL_;
@@ -196,6 +372,11 @@ std::map<std::string, std::vector<WeightedMapping>>& AccountClaims::mappings() {
 const std::map<std::string, std::vector<WeightedMapping>>& AccountClaims::mappings() const {
     return impl_->mappings_;
 }
+std::vector<Export>& AccountClaims::exports() { return impl_->exports_; }
+const std::vector<Export>& AccountClaims::exports() const { return impl_->exports_; }
+std::vector<Import>& AccountClaims::imports() { return impl_->imports_; }
+const std::vector<Import>& AccountClaims::imports() const { return impl_->imports_; }
+
 void AccountClaims::revoke(const std::string& pubKey) {
     revokeAt(pubKey, std::chrono::duration_cast<std::chrono::seconds>(
                          std::chrono::system_clock::now().time_since_epoch())
@@ -269,6 +450,7 @@ std::string AccountClaims::encode(const std::string& seed) const {
     // NATS-specific claims: start from the carried nats object, then
     // overwrite the fields this port manages.
     validateAccountConfig(impl_->limits_, impl_->mappings_);
+    validateExportsImports(impl_->exports_, impl_->imports_);
 
     json nats_claims = impl_->natsRaw_;
     nats_claims["limits"] = accountLimitsToJson(impl_->limits_);
@@ -290,6 +472,20 @@ std::string AccountClaims::encode(const std::string& seed) const {
         nats_claims["mappings"] = maps;
     } else {
         nats_claims.erase("mappings");
+    }
+    if (!impl_->exports_.empty()) {
+        json arr = json::array();
+        for (const auto& e : impl_->exports_) arr.push_back(exportToJson(e));
+        nats_claims["exports"] = arr;
+    } else {
+        nats_claims.erase("exports");
+    }
+    if (!impl_->imports_.empty()) {
+        json arr = json::array();
+        for (const auto& i : impl_->imports_) arr.push_back(importToJson(i));
+        nats_claims["imports"] = arr;
+    } else {
+        nats_claims.erase("imports");
     }
     if (!impl_->revocations_.empty()) nats_claims["revocations"] = impl_->revocations_;
     else nats_claims.erase("revocations");
@@ -460,6 +656,16 @@ std::unique_ptr<AccountClaims> decodeAccountClaims(const std::string& jwt) {
                                entry.value("cluster", "")});
             }
             claims->impl_->mappings_[from] = std::move(wms);
+        }
+    }
+    if (nats.contains("exports") && nats["exports"].is_array()) {
+        for (const auto& e : nats["exports"]) {
+            claims->impl_->exports_.push_back(exportFromJson(e));
+        }
+    }
+    if (nats.contains("imports") && nats["imports"].is_array()) {
+        for (const auto& i : nats["imports"]) {
+            claims->impl_->imports_.push_back(importFromJson(i));
         }
     }
     if (nats.contains("revocations") && nats["revocations"].is_object()) {

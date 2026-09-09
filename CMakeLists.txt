@@ -130,6 +130,7 @@ set(JWT_SOURCES
     src/claims.cpp
     src/operator_claims.cpp
     src/account_claims.cpp
+    src/activation_claims.cpp
     src/user_claims.cpp
     src/creds.cpp
     src/base64url.cpp
@@ -315,6 +316,7 @@ if (JWT_INSTALL)
         ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/claims.hpp
         ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/operator_claims.hpp
         ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/account_claims.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/activation_claims.hpp
         ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/permissions.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/user_claims.hpp
         ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/creds.hpp

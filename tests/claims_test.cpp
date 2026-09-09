@@ -5,6 +5,7 @@
 #include "jwt/creds.hpp"
 #include "jwt/operator_claims.hpp"
 #include "jwt/account_claims.hpp"
+#include "jwt/activation_claims.hpp"
 #include "jwt/user_claims.hpp"
 #include <nkeys/nkeys.hpp>
 
@@ -946,4 +947,147 @@ TEST(RevocationTest, SemanticsMatchGo) {
     // no revocations key on the wire when empty
     jwt::AccountClaims clean(akp->publicString());
     EXPECT_FALSE(natsObjectOf(clean.encode(akp->seedString())).contains("revocations"));
+}
+
+// ============================================================================
+// Imports / exports / activations (fix-plan group 3) — wire facts measured:
+// export type is "stream"/"service"; response_threshold is NANOSECONDS;
+// service_latency emits both fields (sampling 0 serializes as "headers");
+// activation is a FOURTH claim type whose nats object is
+// {subject: import subject, kind: stream|service, type:"activation"} and
+// whose top-level sub is the TARGET account (or "public").
+// ============================================================================
+
+TEST(CrossAccountTest, DecodesGoExportsIntoTypedFields) {
+    auto ac = jwt::decodeAccountClaims(readFixture2("acc-exports.jwt"));
+    const auto& ex = ac->exports();
+    ASSERT_EQ(ex.size(), 2u);
+
+    EXPECT_EQ(ex[0].name, "billing");
+    EXPECT_EQ(ex[0].subject, "billing.charge");
+    EXPECT_EQ(ex[0].type, jwt::ExportType::Service);
+    EXPECT_TRUE(ex[0].tokenReq);
+    ASSERT_EQ(ex[0].revocations.size(), 1u);
+    EXPECT_EQ(ex[0].revocations.begin()->second, 1700000000);
+    EXPECT_EQ(ex[0].responseType, "Singleton");
+    EXPECT_EQ(ex[0].responseThresholdNanos, 2000000000LL);
+    ASSERT_TRUE(ex[0].latency.has_value());
+    EXPECT_EQ(ex[0].latency->sampling, 40);
+    EXPECT_EQ(ex[0].latency->results, "billing.latency");
+    EXPECT_TRUE(ex[0].allowTrace);
+
+    EXPECT_EQ(ex[1].type, jwt::ExportType::Stream);
+    EXPECT_TRUE(ex[1].advertise);
+}
+
+TEST(CrossAccountTest, DecodesGoImportsIntoTypedFields) {
+    auto ac = jwt::decodeAccountClaims(readFixture2("acc-imports.jwt"));
+    const auto& im = ac->imports();
+    ASSERT_EQ(im.size(), 2u);
+    EXPECT_EQ(im[0].subject, "billing.charge");
+    EXPECT_EQ(im[0].account[0], 'A');
+    EXPECT_FALSE(im[0].token.empty());
+    EXPECT_EQ(im[0].localSubject, "acme.billing.charge");
+    EXPECT_EQ(im[0].type, jwt::ExportType::Service);
+    EXPECT_TRUE(im[0].share);
+    EXPECT_EQ(im[1].type, jwt::ExportType::Stream);
+    EXPECT_TRUE(im[1].allowTrace);
+
+    // the embedded token is a REAL activation claim
+    auto act = jwt::decodeActivationClaims(im[0].token);
+    EXPECT_EQ(act->importSubject(), "billing.charge");
+    EXPECT_EQ(act->issuer(), im[0].account);
+}
+
+TEST(CrossAccountTest, ExporterAndImporterWireEqualGo) {
+    // decode→re-encode of both goldens must leave the nats objects EQUAL
+    auto okp = nkeys::CreateOperator();
+    for (const char* fixture : {"acc-exports.jwt", "acc-imports.jwt"}) {
+        auto ac = jwt::decodeAccountClaims(readFixture2(fixture));
+        EXPECT_EQ(natsObjectOf(ac->encode(okp->seedString())),
+                  natsObjectOf(readFixture2(fixture)))
+            << fixture;
+    }
+}
+
+TEST(CrossAccountTest, ActivationClaimsRoundTrip) {
+    auto golden = readFixture2("activation.jwt");
+    auto act = jwt::decodeActivationClaims(golden);
+    EXPECT_EQ(act->name().value_or(""), "billing-grant");
+    EXPECT_EQ(act->importSubject(), "billing.charge");
+    EXPECT_EQ(act->importType(), jwt::ExportType::Service);
+    EXPECT_EQ(act->subject()[0], 'A');  // the grantee account
+
+    // generic decode dispatches on nats.type == "activation"
+    auto generic = jwt::decode(golden);
+    EXPECT_NE(dynamic_cast<jwt::ActivationClaims*>(generic.get()), nullptr);
+    EXPECT_TRUE(jwt::verify(golden));
+
+    // C++-built activation: same nats object as the golden's
+    jwt::ActivationClaims mine(act->subject());
+    mine.setName("billing-grant");
+    mine.setImportSubject("billing.charge");
+    mine.setImportType(jwt::ExportType::Service);
+    auto akp = nkeys::CreateAccount();
+    EXPECT_EQ(natsObjectOf(mine.encode(akp->seedString())), natsObjectOf(golden));
+
+    // decorateJWT armors by the new type
+    EXPECT_EQ(jwt::decorateJWT(golden).rfind("-----BEGIN NATS ACTIVATION JWT-----\n", 0), 0u);
+}
+
+TEST(CrossAccountTest, ValidationRulesMatchGo) {
+    auto akp = nkeys::CreateAccount();
+    auto bkp = nkeys::CreateAccount();
+
+    // stream exports can't carry response types or latency
+    jwt::AccountClaims s1(akp->publicString());
+    s1.exports().push_back({.name = "t", .subject = "t.>",
+                            .type = jwt::ExportType::Stream,
+                            .responseType = "Singleton"});
+    EXPECT_THROW((void)s1.encode(akp->seedString()), jwt::InvalidClaimsError);
+
+    jwt::AccountClaims s2(akp->publicString());
+    s2.exports().push_back({.name = "t", .subject = "t.>",
+                            .type = jwt::ExportType::Stream,
+                            .latency = jwt::ServiceLatency{40, "lat"}});
+    EXPECT_THROW((void)s2.encode(akp->seedString()), jwt::InvalidClaimsError);
+
+    // latency sampling outside 1..100 (0 = "headers" is legal)
+    jwt::AccountClaims s3(akp->publicString());
+    s3.exports().push_back({.name = "b", .subject = "b.x",
+                            .type = jwt::ExportType::Service,
+                            .latency = jwt::ServiceLatency{150, "lat"}});
+    EXPECT_THROW((void)s3.encode(akp->seedString()), jwt::InvalidClaimsError);
+
+    // share is service-only; allow_trace is stream-only (imports)
+    jwt::AccountClaims s4(bkp->publicString());
+    s4.imports().push_back({.name = "t", .subject = "t.>",
+                            .account = akp->publicString(),
+                            .type = jwt::ExportType::Stream, .share = true});
+    EXPECT_THROW((void)s4.encode(bkp->seedString()), jwt::InvalidClaimsError);
+
+    // an import token must come from the account it names
+    auto other = nkeys::CreateAccount();
+    jwt::ActivationClaims grant(bkp->publicString());
+    grant.setImportSubject("b.x");
+    grant.setImportType(jwt::ExportType::Service);
+    auto token = grant.encode(other->seedString());  // issued by the WRONG account
+    jwt::AccountClaims s5(bkp->publicString());
+    s5.imports().push_back({.name = "b", .subject = "b.x",
+                            .account = akp->publicString(), .token = token,
+                            .type = jwt::ExportType::Service});
+    EXPECT_THROW((void)s5.encode(bkp->seedString()), jwt::InvalidClaimsError);
+}
+
+TEST(CrossAccountTest, HeadersSamplingRoundTrips) {
+    // Go marshals SamplingRate 0 as the string "headers"
+    auto akp = nkeys::CreateAccount();
+    jwt::AccountClaims ac(akp->publicString());
+    ac.exports().push_back({.name = "b", .subject = "b.x",
+                            .type = jwt::ExportType::Service,
+                            .latency = jwt::ServiceLatency{0, "lat"}});
+    auto nats = natsObjectOf(ac.encode(akp->seedString()));
+    EXPECT_EQ(nats.at("exports")[0].at("service_latency").at("sampling"), "headers");
+    auto rt = jwt::decodeAccountClaims(ac.encode(akp->seedString()));
+    EXPECT_EQ(rt->exports()[0].latency->sampling, 0);
 }
