@@ -5,7 +5,7 @@
 #
 #   usage: tests/interop/run.sh <cmake-build-dir>
 #
-# Twelve checks:
+# Thirteen checks:
 #   1. C++-minted operator/account/user JWTs pass Go's authenticated Decode —
 #      minted both from seeds and through encodeWithSigner (external signer)
 #   2. C++-generated .creds parses via Go ParseDecoratedJWT (the armor regex
@@ -35,6 +35,8 @@
 #  12. v1 + generic: Go's v1compat-minted tokens (alg ed25519, payload-only
 #      signature, top-level type/tags/issuer_account) decode in C++ and
 #      re-encode as v2 tokens Go decodes; generic claims cross both ways
+#  13. activation hashID: C++ equals Go's HashID() on Go-minted activations,
+#      wildcard and plain subjects alike
 set -eu
 
 BUILD_DIR=${1:?usage: run.sh <cmake-build-dir>}
@@ -204,6 +206,17 @@ printf '%s' "$out" | grep -q "claimtype=generic .* data=\[hello n type version\]
 # branch returns version -1 and applies the v1 signature rule — so Go's
 # working path, DecodeGeneric, is the one gated here)
 check "v1 tokens decode + re-encode as v2 Go accepts; generic claims cross both ways"
+
+# 13 ── activation hashID parity
+mkdir -p "$TMP/x"
+"$GO" genxaccount "$TMP/x" >/dev/null
+for f in "$TMP/x"/*activation*.jwt "$TMP/v1/v1-activation.jwt" "$REPO/tests/fixtures/activation.jwt"; do
+    [ -f "$f" ] || continue
+    want=$("$GO" hashid "$f") || fail "Go could not hash $f"
+    got=$("$CPP" hashid "$f") || fail "C++ could not hash $f"
+    [ "$got" = "$want" ] || fail "hashID mismatch on $f: Go $want, C++ $got"
+done
+check "activation hashID equals Go's HashID() on Go-minted activations"
 
 echo
 echo "INTEROP PASS ($pass checks)"

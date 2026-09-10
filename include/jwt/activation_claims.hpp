@@ -43,6 +43,13 @@ public:
     void setIssuerAccount(const std::string& accountPublicKey);
     [[nodiscard]] std::optional<std::string> issuerAccount() const;
 
+    /// Go's HashID: a stable identifier tooling (nsc, the account server)
+    /// files this activation under — SHA-256 of
+    /// "issuer.grantee.<import subject up to its first wildcard>", standard
+    /// base32 WITH padding (56 chars). Needs issuer (i.e. a decoded or encoded
+    /// claim), grantee and import subject; throws InvalidClaimsError otherwise.
+    [[nodiscard]] std::string hashID() const;
+
 private:
     friend std::unique_ptr<ActivationClaims> decodeActivationClaims(const std::string&);
     void checkStructure() const;

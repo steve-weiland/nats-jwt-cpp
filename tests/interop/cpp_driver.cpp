@@ -9,6 +9,7 @@
 //   encode <dir>              writes op/acc/user.jwt + u.creds (direct issuance)
 //   encode-signer <dir>       the same files minted through encodeWithSigner —
 //                             an external-signer callback holds the keys
+//   hashid <activation.jwt>   Go's HashID() of an activation (SHA-256, padded base32)
 //   migrate <type> <in> <out> <seed>   decode (v1 or v2) and re-encode as v2 with seed
 //   mintgeneric <dir>         a custom-type GenericClaims token
 //   genfields <dir>           operator/account/user/activation carrying
@@ -334,6 +335,8 @@ int main(int argc, char** argv) try {
         uc.allowedConnectionTypes() = {jwt::ConnectionType::Websocket, jwt::ConnectionType::Mqtt};
         std::ofstream(dir + "/rich-user.jwt") << uc.encode(akp->seedString());
         std::cout << "OK\n";
+    } else if (mode == "hashid") {
+        std::cout << jwt::decodeActivationClaims(slurp(argv[2]))->hashID() << "\n";
     } else if (mode == "migrate") { // type in out seed → decode (v1 or v2), re-encode v2
         std::string type = argv[2], tok = slurp(argv[3]), out = argv[4], seed = slurp(argv[5]);
         auto c = jwt::decode(tok);

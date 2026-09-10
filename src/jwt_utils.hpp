@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <vector>
 #include <span>
+#include <array>
 #include <nlohmann/json.hpp>
 #include "jwt/claims.hpp"
 #include "jwt/jwt_errors.hpp"
@@ -39,6 +40,18 @@ std::string signAndAssemble(const std::string& payloadJson,
 /// @param payloadJsonWithoutJti the payload JSON, jti absent
 /// @return 52-character base32 string
 std::string computeJti(std::string_view payloadJsonWithoutJti);
+
+/// SHA-256 (FIPS 180-4 §6.2) — vendored like the SHA-512/256 core; used ONLY
+/// for Go's activation HashID. Validated against the NIST vectors in tests.
+std::array<std::uint8_t, 32> sha256(std::string_view msg);
+
+/// Standard base32 (RFC 4648 alphabet) WITH padding — Go's
+/// base32.StdEncoding.EncodeToString, as HashID uses (the jti is no-pad).
+std::string base32StdPadded(std::span<const std::uint8_t> bytes);
+
+/// Go's cleanSubject (activation_claims.go): cut at the first wildcard token;
+/// a leading wildcard is "_"; no wildcard leaves the subject unchanged.
+std::string cleanSubject(const std::string& subject);
 
 /// Get current Unix timestamp in seconds
 /// @return Unix timestamp (seconds since epoch)

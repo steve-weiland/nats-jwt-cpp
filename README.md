@@ -33,9 +33,12 @@ real nats-server in CI — encode/decode/verify, timing + chain validation,
 creds generation AND parsing (`parseDecoratedJWT`/`parseDecoratedNKey`/
 `parseDecoratedUserNKey`, plus `decorateJWT`/`decorateSeed`, byte-identical to
 Go). Un-ported fields survive decode→re-encode untouched. NOT ported (by
-choice): activation hashID, xkey-encrypted callout traffic, and the account
-`trace` / `cluster_traffic` fields (carried through re-encode untouched, not
-typed or validated). Go's validation rules are ported in full for accounts,
+choice): xkey-encrypted callout traffic, and the account `trace` /
+`cluster_traffic` fields (carried through re-encode untouched, not typed or
+validated). Activation `hashID()` IS ported (Go's HashID: SHA-256 of
+issuer.grantee.subject-up-to-the-first-wildcard, padded standard base32 —
+the key nsc and the account server file activations under; byte-equal to Go
+on Go-minted activations in CI). Go's validation rules are ported in full for accounts,
 users and activations — subject rules, export overlap, import cross-checks
 against the activation token, renaming subjects, limits-vs-counts, info
 URLs, signing keys — with Go's texts verbatim; a CI gate mints Go-flawed

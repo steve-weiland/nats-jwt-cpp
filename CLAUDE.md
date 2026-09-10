@@ -168,6 +168,11 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
   server refuses a WEBSOCKET-only user over TCP (e2e check 9 — logged as
   "authentication error"; "Connection type not allowed" only at -D).
   Connection-type strings are unvalidated, as in Go.
+- `src/jwt_utils.*` — a second vendored hash, SHA-256 (FIPS 180-4 §6.2),
+  used ONLY for `ActivationClaims::hashID()` (Go: HashID — note it uses
+  STANDARD base32 WITH padding, 56 chars, unlike the jti's no-pad base32;
+  `cleanSubject` cuts at the first wildcard token, leading wildcard → "_").
+  NIST-vector tested; Go-golden gated (interop check 13).
 - `src/jwt_utils.*` — `decodeEnvelope` (header/version/signature/v1
   migration, shared by every typed decoder), `signAndAssemble` (the encode
   tail), `addTimeChecks`/`throwFirstBlocking` (the validation report).

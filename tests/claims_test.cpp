@@ -476,6 +476,7 @@ TEST(ClaimsEdgeCaseTest, ManySigningKeys) {
 #include <nlohmann/json.hpp>
 #include "../src/base64url.hpp"
 #include "../src/subject_utils.hpp"
+#include "../src/jwt_utils.hpp"
 #include <fstream>
 
 namespace {
@@ -2326,4 +2327,63 @@ TEST(GoParityTest, SmallWireDivergencesClosed) {
     EXPECT_EQ(vr.errors(), (std::vector<std::string>{
         R"(subject "a..b" cannot contain consecutive `.`)",
         "\"" + ukp->publicString() + "\" is not a valid account signing key"}));
+}
+
+// ============================================================================
+// Activation hashID (fix-plan §7b). Go: SHA-256 of
+// "issuer.grantee.cleanSubject(importSubject)", STANDARD base32 WITH padding
+// (unlike the jti's no-pad form); cleanSubject cuts at the first wildcard
+// token, a leading wildcard becomes "_". Values below were printed by Go's
+// HashID() on our fixtures (probe `hashid`).
+// ============================================================================
+
+TEST(ActivationHashIDTest, Sha256MatchesNistVectors) {
+    auto hex = [](const std::array<std::uint8_t, 32>& d) {
+        static const char* x = "0123456789abcdef"; std::string s;
+        for (auto b : d) { s += x[b >> 4]; s += x[b & 15]; } return s;
+    };
+    EXPECT_EQ(hex(jwt::internal::sha256("abc")), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    EXPECT_EQ(hex(jwt::internal::sha256("")), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    EXPECT_EQ(hex(jwt::internal::sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")),
+              "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+    // a two-block message (exactly 64 bytes → padding spills into a second block)
+    EXPECT_EQ(hex(jwt::internal::sha256(std::string(64, 'a'))),
+              "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb");
+}
+
+TEST(ActivationHashIDTest, CleanSubjectTableMatchesGo) {
+    using jwt::internal::cleanSubject;
+    for (auto [in, want] : std::vector<std::pair<const char*, const char*>>{
+             {"foo", "foo"}, {"*", "_"}, {">", "_"}, {"foo.*", "foo"}, {"foo.bar.>", "foo.bar"},
+             {"foo.*.bar", "foo"}, {"bam.boom.blat.*", "bam.boom.blat"}, {"*.blam", "_"}}) {
+        EXPECT_EQ(cleanSubject(in), want) << in;
+    }
+}
+
+TEST(ActivationHashIDTest, MatchesGoOnFixtures) {
+    EXPECT_EQ(jwt::decodeActivationClaims(readFixture2("activation.jwt"))->hashID(),
+              "GHNOYN7DTYZRUV5VHXWT2CB7YRMCPNUN75SOKHEVP3NHB7YAD4HA====");
+    EXPECT_EQ(jwt::decodeActivationClaims(readFixture2("v1-activation.jwt"))->hashID(),
+              "PDZ3F5R3COIP4KOZHLXOX7PKCX6HMCRTTDJ5GJZMG7ZDVMQMERSQ====");
+}
+
+TEST(ActivationHashIDTest, RequiresIssuerGranteeAndSubjectLikeGo) {
+    auto akp = nkeys::CreateAccount();
+    jwt::ActivationClaims a(nkeys::CreateAccount()->publicString());
+    a.setImportSubject("times.*");
+    a.setImportType(jwt::ExportType::Service);
+    // fresh (never encoded): no issuer yet → Go's error, typo and all
+    try { (void)a.hashID(); FAIL() << "no issuer must not hash"; }
+    catch (const jwt::InvalidClaimsError& e) {
+        EXPECT_STREQ(e.what(), "not enough data in the activaion claims to create a hash");
+    }
+    auto tok = a.encode(akp->seedString());
+    auto h1 = jwt::decodeActivationClaims(tok)->hashID();
+    EXPECT_EQ(h1.size(), 56u);  // 32 bytes → 56 base32 chars incl. "===="
+    EXPECT_EQ(h1.substr(52), "====");
+    // the wildcard tail is stripped before hashing: times.* and times.*.bar hash alike
+    a.setImportSubject("times.*.bar");
+    EXPECT_EQ(jwt::decodeActivationClaims(a.encode(akp->seedString()))->hashID(), h1);
+    a.setImportSubject("other.*");
+    EXPECT_NE(jwt::decodeActivationClaims(a.encode(akp->seedString()))->hashID(), h1);
 }

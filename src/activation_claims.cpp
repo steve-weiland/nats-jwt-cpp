@@ -60,6 +60,16 @@ std::optional<std::string> ActivationClaims::issuerAccount() const {
     return impl_->issuerAccount_;
 }
 
+std::string ActivationClaims::hashID() const {
+    if (impl_->issuer_.empty() || impl_->subject_.empty() || impl_->importSubject_.empty()) {
+        throw InvalidClaimsError("not enough data in the activaion claims to create a hash");  // Go's text
+    }
+    const std::string base = impl_->issuer_ + "." + impl_->subject_ + "." +
+                             internal::cleanSubject(impl_->importSubject_);
+    const auto digest = internal::sha256(base);
+    return internal::base32StdPadded(digest);
+}
+
 std::string ActivationClaims::encode(const std::string& seed) const {
     // the seed path is the signer path with an in-process keypair
     auto keypair = nkeys::FromSeed(seed);
