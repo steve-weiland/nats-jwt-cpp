@@ -5,6 +5,7 @@
 #include "../src/base64url.hpp"
 #include "../src/jwt_utils.hpp"
 #include <functional>
+#include <algorithm>
 #include <type_traits>
 #include <fstream>
 #include <sstream>
@@ -134,8 +135,12 @@ TEST(JwtDecodingTest, AccountRoundTrip) {
     original.setIssuer(operator_kp->publicString());
     original.setName("Test Account");
     original.setExpires(9999999999);
-    original.addSigningKey("AABC123");
-    original.addSigningKey("AXYZ789");
+    // real account keys: Go's Account.Validate (SigningKeys.Validate) and our
+    // encode both refuse fake ones
+    const std::string sk1 = nkeys::CreateAccount()->publicString();
+    const std::string sk2 = nkeys::CreateAccount()->publicString();
+    original.addSigningKey(sk1);
+    original.addSigningKey(sk2);
 
     std::string jwt_string = original.encode(operator_kp->seedString());
 
@@ -149,8 +154,10 @@ TEST(JwtDecodingTest, AccountRoundTrip) {
     EXPECT_GT(decoded->issuedAt(), 0);
     EXPECT_EQ(decoded->expires(), 9999999999);
     EXPECT_EQ(decoded->signingKeys().size(), 2);
-    EXPECT_EQ(decoded->signingKeys()[0], "AABC123");
-    EXPECT_EQ(decoded->signingKeys()[1], "AXYZ789");
+    // Go serializes signing keys SORTED; compare as sets
+    std::vector<std::string> want{sk1, sk2}, got = decoded->signingKeys();
+    std::sort(want.begin(), want.end()); std::sort(got.begin(), got.end());
+    EXPECT_EQ(got, want);
 }
 
 // Round-trip test: User encode → decode

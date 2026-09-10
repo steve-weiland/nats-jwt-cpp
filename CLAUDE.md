@@ -75,6 +75,15 @@ the Go implementation is the defining requirement and is continuously measured
   and those must stay decodable (the #6 lesson; interop check 11 compares
   our report to Go's line for line). Never add a throw inside a rule
   validator; add an issue.
+- **Go's Subject rules live in one place** — `src/subject_utils.hpp`
+  (Subject.Validate, HasWildCards, IsContainedIn, RenamingSubject,
+  Info.Validate, checkPermission). Every account/user rule that touches a
+  subject goes through it; interop check 11 compares our report to Go's
+  line for line on Go-minted flawed tokens (exports, imports, limits, user
+  permissions), so a text or rule drift shows up there. Go can MINT what
+  its own Validate flags (Encode does not validate), and Go REFUSES to
+  marshal some invalid values (a SamplingRate outside 1..100 is
+  "unknown sampling rate") — a golden can only carry flaws Go can write.
 - **Docs state measured truth only** (history: "License TBD", a README example
   demonstrating a redundant setIssuer dance, tests that asserted the
   creds-breaking bug).

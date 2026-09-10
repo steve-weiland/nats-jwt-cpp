@@ -92,7 +92,7 @@ std::string ActivationClaims::encodeWithSigner(const std::string& issuerPublicKe
         {"iss", impl_->issuer_},
         {"sub", impl_->subject_}
     };
-    if (impl_->name_) payload["name"] = *impl_->name_;
+    if (impl_->name_ && !impl_->name_->empty()) payload["name"] = *impl_->name_;  // Go: omitempty
     if (impl_->expires_ > 0) payload["exp"] = impl_->expires_;
     if (!impl_->audience_.empty()) payload["aud"] = impl_->audience_;
     if (impl_->notBefore_ > 0) payload["nbf"] = impl_->notBefore_;

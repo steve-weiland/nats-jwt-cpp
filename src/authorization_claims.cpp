@@ -130,7 +130,7 @@ namespace {
                      const std::optional<std::string>& name, std::int64_t exp, const std::string& aud,
                      std::int64_t nbf) {
         json p = {{"iat", iat}, {"iss", iss}, {"sub", sub}};
-        if (name) p["name"] = *name;
+        if (name && !name->empty()) p["name"] = *name;  // Go: omitempty
         if (exp > 0) p["exp"] = exp;
         if (!aud.empty()) p["aud"] = aud;
         if (nbf > 0) p["nbf"] = nbf;

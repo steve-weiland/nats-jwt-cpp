@@ -4,6 +4,7 @@
 #include "base64url.hpp"
 #include "jwt_utils.hpp"
 #include "scope_serialization.hpp"
+#include "subject_utils.hpp"
 #include <nkeys/nkeys.hpp>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -18,40 +19,6 @@ namespace jwt {
 namespace {
 
     using json = nlohmann::json;
-
-    // Go's checkPermission: "subject" or "subject queue"; queues only where
-    // permitted (subscriptions), never a third token.
-    void validatePermissionSubject(const std::string& entry, bool permitQueue, ValidationResults& vr) {
-        std::vector<std::string> tokens;
-        std::size_t pos = 0;
-        while (pos <= entry.size()) {
-            auto next = entry.find(' ', pos);
-            if (next == std::string::npos) {
-                tokens.push_back(entry.substr(pos));
-                break;
-            }
-            tokens.push_back(entry.substr(pos, next - pos));
-            pos = next + 1;
-        }
-        // Go's checkPermission, texts verbatim
-        if (tokens.size() > 2) {
-            vr.addError("Permission Subject \"" + entry + "\" contains too many spaces");
-            return;
-        }
-        if (tokens.size() == 2 && !permitQueue) {
-            vr.addError("Permission Subject \"" + entry + "\" is not allowed to contain queue");
-        }
-        for (const auto& t : tokens) {
-            if (t.empty()) vr.addError("subject cannot be empty");  // Go: Subject.Validate
-        }
-    }
-
-    void validatePermissions(const Permissions& p, ValidationResults& vr) {
-        for (const auto& s : p.pub.allow) validatePermissionSubject(s, false, vr);
-        for (const auto& s : p.pub.deny) validatePermissionSubject(s, false, vr);
-        for (const auto& s : p.sub.allow) validatePermissionSubject(s, true, vr);
-        for (const auto& s : p.sub.deny) validatePermissionSubject(s, true, vr);
-    }
 
     // Go: net.ParseCIDR — require addr/prefix with a parseable v4/v6 address
     // and an in-range prefix length.
@@ -75,19 +42,15 @@ namespace {
         }
     }
 
-    // Go: time.Parse("15:04:05", ...) — strict HH:MM:SS.
+    // Go: time.Parse("15:04:05", ...) — measured: the "15" hour verb takes
+    // ONE or two digits ("9:00:00" parses), minutes/seconds exactly two.
     void validateTimeOfDay(const std::string& t, const char* which, ValidationResults& vr) {
-        bool ok = t.size() == 8 && t[2] == ':' && t[5] == ':';
+        const auto parts = internal::splitOn(t, ':');
+        bool ok = parts.size() == 3 && (parts[0].size() == 1 || parts[0].size() == 2) &&
+                  parts[1].size() == 2 && parts[2].size() == 2;
+        for (const auto& part : parts) ok = ok && internal::isDigits(part);
         if (ok) {
-            for (std::size_t i : {0u, 1u, 3u, 4u, 6u, 7u}) {
-                if (t[i] < '0' || t[i] > '9') { ok = false; break; }
-            }
-        }
-        if (ok) {
-            const int h = (t[0] - '0') * 10 + (t[1] - '0');
-            const int m = (t[3] - '0') * 10 + (t[4] - '0');
-            const int sec = (t[6] - '0') * 10 + (t[7] - '0');
-            ok = h <= 23 && m <= 59 && sec <= 59;
+            ok = std::stoi(parts[0]) <= 23 && std::stoi(parts[1]) <= 59 && std::stoi(parts[2]) <= 59;
         }
         if (!ok) {
             vr.addError(std::string(which) + " in time range is invalid \"" + t + "\"");
@@ -157,7 +120,9 @@ std::vector<std::string>& UserClaims::tags() { return impl_->tags_; }
 const std::vector<std::string>& UserClaims::tags() const { return impl_->tags_; }
 void UserClaims::setIssuer(const std::string& issuerKey) { impl_->issuer_ = issuerKey; }
 void UserClaims::setIssuerAccount(const std::string& accountPublicKey) {
-    impl_->issuerAccount_ = accountPublicKey;
+    // Go: omitempty — "" means unset
+    if (accountPublicKey.empty()) impl_->issuerAccount_.reset();
+    else impl_->issuerAccount_ = accountPublicKey;
 }
 std::optional<std::string> UserClaims::issuerAccount() const {
     return impl_->issuerAccount_;
@@ -236,7 +201,7 @@ std::string UserClaims::encodeWithSigner(const std::string& issuerPublicKey,
         {"sub", impl_->subject_}
     };
 
-    if (impl_->name_) {
+    if (impl_->name_ && !impl_->name_->empty()) {  // Go: omitempty
         payload["name"] = *impl_->name_;
     }
     if (impl_->expires_ > 0) {
@@ -304,7 +269,7 @@ std::string UserClaims::encodeWithSigner(const std::string& issuerPublicKey,
 
 void UserClaims::validate(ValidationResults& vr) const {
     internal::addTimeChecks(vr, impl_->expires_, impl_->notBefore_);
-    validatePermissions(impl_->permissions_, vr);
+    internal::validatePermissions(impl_->permissions_, vr);
     validateLimits(impl_->limits_, vr);
     if (impl_->issuerAccount_ && !nkeys::IsValidPublicAccountKey(*impl_->issuerAccount_)) {
         vr.addError("account_id is not an account public key");
@@ -371,18 +336,8 @@ std::unique_ptr<UserClaims> decodeUserClaims(const std::string& jwt) {
         if (nats["src"].is_array()) {
             lims.src = nats["src"].get<std::vector<std::string>>();
         } else if (nats["src"].is_string()) {
-            std::string all = nats["src"].get<std::string>();
-            std::size_t pos = 0;
-            while (pos <= all.size()) {
-                auto next = all.find(',', pos);
-                std::string piece = all.substr(pos, next == std::string::npos
-                                                        ? std::string::npos : next - pos);
-                std::transform(piece.begin(), piece.end(), piece.begin(),
-                               [](unsigned char ch) { return std::tolower(ch); });
-                if (!piece.empty()) lims.src.push_back(piece);
-                if (next == std::string::npos) break;
-                pos = next + 1;
-            }
+            // Go: CIDRList.Set → TagList.Add: lower-case, TRIM, drop empties, de-dup
+            addTags(lims.src, internal::splitOn(nats["src"].get<std::string>(), ','));
         } else {
             throw MalformedTokenError("field 'src' must be an array or a string");
         }

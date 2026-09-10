@@ -167,7 +167,7 @@ check "aud/nbf/tags: C++ values land in Go's typed parse; Go's goldens decode in
 # 11 ── validation report parity on Go-mintable-but-flawed tokens
 mkdir -p "$TMP/flawed"
 "$GO" genflawed "$TMP/flawed" >/dev/null
-for f in expired notyet selfsigned to mapping user; do
+for f in expired notyet selfsigned to mapping user exports imports limits; do
     want=$("$GO" validate "$TMP/flawed/flawed-$f.jwt" | grep "^ISSUE:") || true
     # capture the driver's status itself (a pipeline would report grep's)
     cppout=$("$CPP" validate "$TMP/flawed/flawed-$f.jwt") || fail "C++ could not decode Go's flawed-$f.jwt (advisory failures must stay inspectable)"

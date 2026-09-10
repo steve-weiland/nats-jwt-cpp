@@ -5,6 +5,7 @@
 #include "base64url.hpp"
 #include "jwt_utils.hpp"
 #include "scope_serialization.hpp"
+#include "subject_utils.hpp"
 #include <algorithm>
 #include <limits>
 #include <chrono>
@@ -146,7 +147,8 @@ namespace {
     ExportType exportTypeFrom(const std::string& s) {
         if (s == "stream") return ExportType::Stream;
         if (s == "service") return ExportType::Service;
-        return ExportType::Unknown;
+        if (s.empty()) return ExportType::Unknown;
+        throw MalformedTokenError("unknown export type \"" + s + "\"");  // Go: UnmarshalJSON error
     }
 
     json exportToJson(const Export& e) {
@@ -275,65 +277,113 @@ namespace {
         return a;
     }
 
+    // Go's Exports.Validate / Imports.Validate (exports.go, imports.go), texts
+    // verbatim, including the per-kind export overlap and the per-account
+    // service import overlap.
     void validateExportsImports(const std::vector<Export>& exports,
-                                const std::vector<Import>& imports, ValidationResults& vr) {
+                                const std::vector<Import>& imports,
+                                const std::string& accountSubject, ValidationResults& vr) {
+        using internal::validateSubject;
+        std::vector<std::string> serviceSubjects, streamSubjects;
         for (const auto& e : exports) {
-            if (e.type != ExportType::Stream && e.type != ExportType::Service) {
-                vr.addError("invalid export type for \"" + e.subject + "\"");
+            const bool isService = e.type == ExportType::Service;
+            const bool isStream = e.type == ExportType::Stream;
+            (isService ? serviceSubjects : streamSubjects).push_back(e.subject);
+            if (!isService && !isStream) {
+                vr.addError(std::string("invalid export type: \"") + exportTypeStr(e.type) + "\"");
             }
-            if (e.type == ExportType::Stream) {
+            if (isService && !e.responseType.empty() && e.responseType != "Singleton" &&
+                e.responseType != "Stream" && e.responseType != "Chunked") {
+                vr.addError("invalid response type for service: \"" + e.responseType + "\"");
+            }
+            if (isStream) {
                 if (!e.responseType.empty()) {
-                    vr.addError("invalid response type for stream \"" + e.subject + "\"");
+                    vr.addError("invalid response type for stream: \"" + e.responseType + "\"");
                 }
-                if (e.allowTrace) {
-                    vr.addError("AllowTrace only valid for service export");
+                if (e.allowTrace) vr.addError("AllowTrace only valid for service export");
+            }
+            if (e.latency) {
+                if (!isService) vr.addError("latency tracking only permitted for services");
+                if (e.latency->sampling != 0 && (e.latency->sampling < 1 || e.latency->sampling > 100)) {
+                    vr.addError("sampling percentage needs to be between 1-100");
                 }
-                if (e.latency) {
-                    vr.addError("latency tracking only permitted for services");
-                }
-                if (e.responseThresholdNanos > 0) {
-                    vr.addError("response threshold only valid for services");
-                }
-            } else {
-                if (!e.responseType.empty() && e.responseType != "Singleton" &&
-                    e.responseType != "Stream" && e.responseType != "Chunked") {
-                    vr.addError("invalid response type for service: \"" +
-                                             e.responseType + "\"");
+                validateSubject(e.latency->results, vr);
+                if (internal::subjectHasWildcards(e.latency->results)) {
+                    vr.addError("results subject can not contain wildcards");
                 }
             }
-            if (e.responseThresholdNanos < 0) {
-                vr.addError("negative response threshold is invalid");
+            if (e.responseThresholdNanos < 0) vr.addError("negative response threshold is invalid");
+            if (e.responseThresholdNanos > 0 && !isService) {
+                vr.addError("response threshold only valid for services");
             }
-            if (e.latency && (e.latency->sampling < 0 || e.latency->sampling > 100)) {
-                vr.addError("sampling percentage needs to be between 1-100 (or 0 for headers)");
-            }
+            validateSubject(e.subject, vr);
             if (e.accountTokenPosition > 0) {
-                if (e.subject.find('*') == std::string::npos &&
-                    e.subject.find('>') == std::string::npos) {
-                    vr.addError(
-                        "Account Token Position can only be used with wildcard subjects");
+                if (!internal::subjectHasWildcards(e.subject)) {
+                    vr.addError("Account Token Position can only be used with wildcard subjects: " + e.subject);
+                } else {
+                    const auto tokens = internal::splitOn(e.subject, '.');
+                    if (e.accountTokenPosition > tokens.size()) {
+                        vr.addError("Account Token Position " + std::to_string(e.accountTokenPosition) +
+                                    " exceeds length of subject '" + e.subject + "'");
+                    } else if (const auto& tk = tokens[e.accountTokenPosition - 1]; tk != "*") {
+                        vr.addError("Account Token Position " + std::to_string(e.accountTokenPosition) +
+                                    " matches '" + tk + "' but must match a * in: " + e.subject);
+                    }
                 }
             }
+            internal::validateInfo(e.description, e.infoURL, vr);
         }
+        // Go's isContainedIn: one issue per CONTAINING subject (first contained wins)
+        auto overlaps = [&](const char* kind, const std::vector<std::string>& subs) {
+            std::map<std::string, std::string> m;
+            for (std::size_t i = 0; i < subs.size(); ++i) {
+                for (std::size_t j = 0; j < subs.size(); ++j) {
+                    if (i == j) continue;
+                    if (internal::subjectIsContainedIn(subs[i], subs[j]) && !m.count(subs[j])) m[subs[j]] = subs[i];
+                }
+            }
+            for (const auto& [k, v] : m) {
+                vr.addError(std::string(kind) + " export subject \"" + k + "\" already exports \"" + v + "\"");
+            }
+        };
+        overlaps("service", serviceSubjects);
+        overlaps("stream", streamSubjects);
+
+        std::map<std::string, std::vector<std::string>> subsByAcct;  // Go: per-account overlap for services
         for (const auto& i : imports) {
-            if (i.type != ExportType::Stream && i.type != ExportType::Service) {
-                vr.addError("invalid import type for \"" + i.subject + "\"");
+            const bool isService = i.type == ExportType::Service;
+            const bool isStream = i.type == ExportType::Stream;
+            if (isService) {
+                std::string sub = i.to;
+                if (sub.empty()) sub = internal::renamingToSubject(i.localSubject);
+                if (sub.empty()) sub = i.subject;
+                auto& seen = subsByAcct[i.account];
+                for (const auto& other : seen) {
+                    if (internal::subjectIsContainedIn(sub, other) || internal::subjectIsContainedIn(other, sub)) {
+                        vr.addError("overlapping subject namespace for \"" + sub + "\" and \"" + other +
+                                    "\" in same account \"" + i.account + "\"");
+                    }
+                }
+                if (std::find(seen.begin(), seen.end(), sub) != seen.end()) {
+                    vr.addError("overlapping subject namespace for \"" + sub + "\" in account \"" + i.account + "\"");
+                } else {
+                    seen.push_back(sub);
+                }
             }
-            if (i.type == ExportType::Service && i.allowTrace) {
-                vr.addError("AllowTrace only valid for stream import");
+            if (!isService && !isStream) {
+                vr.addError(std::string("invalid import type: \"") + exportTypeStr(i.type) + "\"");
             }
-            if (i.account.empty()) {
-                vr.addError("account to import from is not specified");
+            if (isService && i.allowTrace) vr.addError("AllowTrace only valid for stream import");
+            if (i.account.empty()) vr.addError("account to import from is not specified");
+            if (!i.to.empty()) vr.addWarning("the field to has been deprecated (use LocalSubject instead)");
+            validateSubject(i.subject, vr);
+            if (!i.localSubject.empty()) {
+                internal::validateRenamingSubject(i.localSubject, i.subject, vr);
+                if (!i.to.empty()) vr.addError("Local Subject replaces To");
             }
-            if (!i.to.empty()) {
-                vr.addWarning("the field to has been deprecated (use LocalSubject instead)");
-            }
-            if (!i.localSubject.empty() && !i.to.empty()) {
-                vr.addError("Local Subject replaces To");
-            }
-            if (i.share && i.type != ExportType::Service) {
-                vr.addError(
-                    "sharing information (for latency tracking) is only valid for services");
+            if (i.share && !isService) {
+                vr.addError("sharing information (for latency tracking) is only valid for services: \"" +
+                            i.subject + "\"");
             }
             if (!i.token.empty()) {
                 std::unique_ptr<ActivationClaims> act;
@@ -344,10 +394,26 @@ namespace {
                     continue;
                 }
                 const auto issuerAccount = act->issuerAccount();
-                if (act->issuer() != i.account &&
-                    (!issuerAccount || *issuerAccount != i.account)) {
-                    vr.addError("activation token doesn't match account for import \"" +
-                                             i.subject + "\"");
+                if (!(act->issuer() == i.account || (issuerAccount && *issuerAccount == i.account))) {
+                    vr.addError("activation token doesn't match account for import \"" + i.subject + "\"");
+                }
+                if (act->subject() != accountSubject) {
+                    vr.addError("activation token doesn't match account it is being included in, \"" +
+                                i.subject + "\"");
+                }
+                if (act->importType() != i.type) {
+                    vr.addError(std::string("mismatch between token import type ") +
+                                exportTypeStr(act->importType()) + " and type of import " + exportTypeStr(i.type));
+                }
+                // Go: act.validateWithTimeChecks(vr, false) — the token's own
+                // rules, without its time checks
+                ValidationResults tokenIssues;
+                act->validate(tokenIssues);
+                for (const auto& issue : tokenIssues.issues()) if (!issue.timeCheck) vr.add(issue);
+                const std::string subj = (isService && !i.to.empty()) ? i.to : i.subject;
+                if (!internal::subjectIsContainedIn(subj, act->importSubject())) {
+                    vr.addError("activation token import subject \"" + act->importSubject() +
+                                "\" doesn't match import \"" + i.subject + "\"");
                 }
             }
         }
@@ -522,7 +588,7 @@ std::string AccountClaims::encodeWithSigner(const std::string& issuerPublicKey,
         {"sub", impl_->subject_}
     };
 
-    if (impl_->name_) {
+    if (impl_->name_ && !impl_->name_->empty()) {  // Go: omitempty
         payload["name"] = *impl_->name_;
     }
     if (impl_->expires_ > 0) {
@@ -559,16 +625,23 @@ std::string AccountClaims::encodeWithSigner(const std::string& issuerPublicKey,
     } else {
         nats_claims.erase("mappings");
     }
+    // Go's EncodeWithSigner sorts exports and imports by subject
     if (!impl_->exports_.empty()) {
+        auto sorted = impl_->exports_;
+        std::stable_sort(sorted.begin(), sorted.end(),
+                         [](const Export& a, const Export& b) { return a.subject < b.subject; });
         json arr = json::array();
-        for (const auto& e : impl_->exports_) arr.push_back(exportToJson(e));
+        for (const auto& e : sorted) arr.push_back(exportToJson(e));
         nats_claims["exports"] = arr;
     } else {
         nats_claims.erase("exports");
     }
     if (!impl_->imports_.empty()) {
+        auto sorted = impl_->imports_;
+        std::stable_sort(sorted.begin(), sorted.end(),
+                         [](const Import& a, const Import& b) { return a.subject < b.subject; });
         json arr = json::array();
-        for (const auto& i : impl_->imports_) arr.push_back(importToJson(i));
+        for (const auto& i : sorted) arr.push_back(importToJson(i));
         nats_claims["imports"] = arr;
     } else {
         nats_claims.erase("imports");
@@ -613,8 +686,49 @@ std::string AccountClaims::encodeWithSigner(const std::string& issuerPublicKey,
 void AccountClaims::validate(ValidationResults& vr) const {
     internal::addTimeChecks(vr, impl_->expires_, impl_->notBefore_);
     validateAccountConfig(impl_->limits_, impl_->mappings_, vr);
-    validateExportsImports(impl_->exports_, impl_->imports_, vr);
+    validateExportsImports(impl_->exports_, impl_->imports_, impl_->subject_, vr);
+    // Go: Limits.Validate is covered by validateAccountConfig; then
+    // DefaultPermissions, Mappings (config), Authorization, count limits,
+    // SigningKeys, Info — account_claims.go Account.Validate
+    internal::validatePermissions(impl_->defaultPermissions_, vr);
     validateExternalAuthorization(impl_->authorization_, vr);
+    {
+        const auto& l = impl_->limits_;
+        const bool limitsEmpty = l.subs == 0 && l.data == 0 && l.payload == 0 && l.imports == 0 &&
+                                 l.exports == 0 && !l.wildcardExports && !l.disallowBearer &&
+                                 l.conn == 0 && l.leafNodeConn == 0 &&
+                                 l.jetStream == JetStreamLimits{} && l.tieredLimits.empty();
+        const auto nImports = static_cast<std::int64_t>(impl_->imports_.size());
+        const auto nExports = static_cast<std::int64_t>(impl_->exports_.size());
+        // Go reports the import-count breach TWICE (two overlapping checks) — mirrored
+        if (!limitsEmpty && l.imports >= 0 && nImports > l.imports) {
+            vr.addError("the account contains more imports than allowed by the operator");
+        }
+        if (l.imports != -1 && nImports > l.imports) {
+            vr.addError("the account contains more imports than allowed by the operator");
+        }
+        if (l.exports != -1) {
+            if (nExports > l.exports) {
+                vr.addError("the account contains more exports than allowed by the operator");
+            }
+            if (!l.wildcardExports) {
+                for (const auto& ex : impl_->exports_) {
+                    if (internal::subjectHasWildcards(ex.subject)) {
+                        vr.addError("the account contains wildcard exports that are not allowed by the operator");
+                    }
+                }
+            }
+        }
+    }
+    // Go: SigningKeys.Validate — plain keys and scope keys must be account keys
+    for (const auto& k : impl_->signingKeys_) {
+        if (impl_->scopes_.count(k)) {
+            if (!nkeys::IsValidPublicAccountKey(k)) vr.addError(k + " is not an account public key");
+        } else if (!nkeys::IsValidPublicAccountKey(k)) {
+            vr.addError("\"" + k + "\" is not a valid account signing key");
+        }
+    }
+    internal::validateInfo(impl_->description_, impl_->infoURL_, vr);
     // Go: IsEmpty is the ZERO value, so this fires even for the -1 no-limit
     // defaults (measured on Go's own self-signed golden)
     const auto& l = impl_->limits_;

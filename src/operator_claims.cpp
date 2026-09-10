@@ -63,7 +63,7 @@ namespace {
             if (parsed.scheme != "nats" && parsed.scheme != "tls" &&
                 parsed.scheme != "ws" && parsed.scheme != "wss") {
                 vr.addError("operator service url \"" + u +
-                                         "\" - protocol not supported (nats, tls, ws, wss only)");
+                            "\" - protocol not supported (only 'nats', 'tls', 'ws', 'wss' only)");
             }
         }
         for (const auto& k : signingKeys) {
@@ -200,7 +200,7 @@ std::string OperatorClaims::encodeWithSigner(const std::string& issuerPublicKey,
         {"sub", impl_->subject_}
     };
 
-    if (impl_->name_) {
+    if (impl_->name_ && !impl_->name_->empty()) {  // Go: omitempty
         payload["name"] = *impl_->name_;
     }
     if (impl_->expires_ > 0) {

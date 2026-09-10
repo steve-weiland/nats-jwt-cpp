@@ -479,6 +479,7 @@ int main(int argc, char **argv) {
 
 #include <nlohmann/json.hpp>
 #include "../src/base64url.hpp"
+#include "../src/subject_utils.hpp"
 #include <fstream>
 
 namespace {
@@ -2259,4 +2260,70 @@ TEST(CanonicalEncodingTest, UnscopingResetsOnlyLimitsLikeGo) {
     // SetScoped(true) still zeroes everything (measured group 5c)
     u.setScoped(true);
     EXPECT_TRUE(u.hasEmptyPermissions());
+}
+
+// ============================================================================
+// Review 2026-09-09, R10/R11: Go's Subject rules and the small wire divergences.
+// The report texts are gated line-for-line against Go in interop check 11.
+// ============================================================================
+
+TEST(GoParityTest, SubjectHelpersMatchGo) {
+    using namespace jwt::internal;
+    EXPECT_TRUE(subjectIsContainedIn("a.b", "a.>"));
+    EXPECT_TRUE(subjectIsContainedIn("a.b.c", "a.*.c"));
+    EXPECT_TRUE(subjectIsContainedIn("a", "*"));
+    EXPECT_FALSE(subjectIsContainedIn("a.b", "a.b.c"));
+    EXPECT_FALSE(subjectIsContainedIn("a.b.c", "a.b"));
+    EXPECT_FALSE(subjectIsContainedIn("a.b", "x.>"));
+    EXPECT_TRUE(subjectHasWildcards("a.>"));
+    EXPECT_TRUE(subjectHasWildcards("*.a"));
+    EXPECT_FALSE(subjectHasWildcards("a.b*"));  // Go: only token wildcards
+    EXPECT_EQ(renamingToSubject("l.$1.x.$2"), "l.*.x.*");
+    EXPECT_EQ(countTokenWildcards("a.*.*.>"), 2);
+    jwt::ValidationResults vr;
+    validateSubject("", vr);
+    EXPECT_EQ(vr.errors(), (std::vector<std::string>{"subject cannot be empty"}));
+}
+
+TEST(GoParityTest, SmallWireDivergencesClosed) {
+    auto okp = nkeys::CreateOperator(); auto akp = nkeys::CreateAccount(); auto ukp = nkeys::CreateUser();
+    // name "" is omitted (Go: omitempty)
+    jwt::UserClaims u(ukp->publicString());
+    u.setName("");
+    u.setIssuerAccount("");  // Go: "" means unset
+    auto tok = u.encode(akp->seedString());
+    auto first = tok.find('.'); auto second = tok.find('.', first + 1);
+    auto b = jwt::internal::base64url_decode(tok.substr(first + 1, second - first - 1));
+    auto payload = nlohmann::json::parse(std::string(b.begin(), b.end()));
+    EXPECT_FALSE(payload.contains("name"));
+    EXPECT_FALSE(payload.at("nats").contains("issuer_account"));
+    // src comma string: Go's TagList.Add trims, lower-cases, de-dups
+    const std::string p = R"({"iss":")" + akp->publicString() + R"(","sub":")" + ukp->publicString() + R"(","jti":"x","iat":1,"nats":{"type":"user","version":2,"src":"10.0.0.0/8, 192.168.0.0/16,10.0.0.0/8"}})";
+    auto dec = jwt::decodeUserClaims(mintWithHeader(V2_HEADER, p, *akp, false));
+    EXPECT_EQ(dec->limits().src, (std::vector<std::string>{"10.0.0.0/8", "192.168.0.0/16"}));
+    // times: Go's "15:04:05" layout takes a 1-digit hour
+    jwt::UserClaims t(ukp->publicString());
+    t.limits().times = {{"9:00:00", "17:00:00"}};
+    EXPECT_NO_THROW((void)t.encode(akp->seedString()));
+    t.limits().times = {{"09:0:00", "17:00:00"}};
+    EXPECT_THROW((void)t.encode(akp->seedString()), jwt::InvalidClaimsError);
+    // exports/imports sorted by subject on encode (Go: sort.Sort)
+    jwt::AccountClaims ac(akp->publicString());
+    jwt::Export z; z.name = "z"; z.subject = "zzz.>"; z.type = jwt::ExportType::Stream;
+    jwt::Export a; a.name = "a"; a.subject = "aaa.>"; a.type = jwt::ExportType::Stream;
+    ac.exports() = {z, a};
+    auto nats = natsObjectOf(ac.encode(okp->seedString()));
+    EXPECT_EQ(nats.at("exports")[0].at("subject"), "aaa.>");
+    // an unknown export type STRING is a malformed token (Go: UnmarshalJSON error); absent is fine
+    const std::string bad = R"({"iss":")" + okp->publicString() + R"(","sub":")" + akp->publicString() + R"(","jti":"x","iat":1,"nats":{"type":"account","version":2,"exports":[{"name":"e","subject":"s","type":"bogus"}]}})";
+    EXPECT_THROW((void)jwt::decodeAccountClaims(mintWithHeader(V2_HEADER, bad, *okp, false)), jwt::MalformedTokenError);
+    // account rules Go has that we lacked: signing keys must be account keys, default permissions validated
+    jwt::AccountClaims sk(akp->publicString());
+    sk.addSigningKey(ukp->publicString());
+    sk.defaultPermissions().pub.allow = {"a..b"};
+    jwt::ValidationResults vr;
+    sk.validate(vr);
+    EXPECT_EQ(vr.errors(), (std::vector<std::string>{
+        R"(subject "a..b" cannot contain consecutive `.`)",
+        "\"" + ukp->publicString() + "\" is not a valid account signing key"}));
 }

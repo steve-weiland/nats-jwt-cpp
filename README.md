@@ -32,7 +32,18 @@ real nats-server in CI — encode/decode/verify, timing + chain validation,
 creds generation AND parsing (`parseDecoratedJWT`/`parseDecoratedNKey`/
 `parseDecoratedUserNKey`, plus `decorateJWT`/`decorateSeed`, byte-identical to
 Go). Un-ported fields survive decode→re-encode untouched. NOT ported (by
-choice): activation hashID, xkey-encrypted callout traffic. v1 tokens ARE
+choice): activation hashID, xkey-encrypted callout traffic, and the account
+`trace` / `cluster_traffic` fields (carried through re-encode untouched, not
+typed or validated). Go's validation rules are ported in full for accounts,
+users and activations — subject rules, export overlap, import cross-checks
+against the activation token, renaming subjects, limits-vs-counts, info
+URLs, signing keys — with Go's texts verbatim; a CI gate mints Go-flawed
+tokens and compares the two libraries' reports line for line. Documented
+remaining divergences: operator URL rules are stricter than Go's
+`url.Parse` (scheme-only URLs and empty hosts are refused here), the
+`assert_server_version` message is a single text, and a version-less
+authorization token is refused (Go's auth loaders apply the v1 signature
+rule to it). v1 tokens ARE
 read (Go's migration: payload-only signature, top-level type/tags/
 issuer_account moved into `nats`, v1-only limit fields dropped) and
 re-encode as v2, like Go — Go's own v1compat-minted goldens are the gate.

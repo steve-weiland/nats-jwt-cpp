@@ -539,9 +539,63 @@ func main() {
 		qc.Limits.Src.Add("not-a-cidr")
 		badUser, err := qc.Encode(akp)
 		must(err)
+		// exports: overlap, bad subjects, token position, latency, info url, default perms, signing key
+		xkp, _ := nkeys.CreateAccount()
+		ec := jwt.NewAccountClaims(apk)
+		ec.Exports.Add(
+			&jwt.Export{Name: "a", Subject: "svc.>", Type: jwt.Service},
+			&jwt.Export{Name: "b", Subject: "svc.one", Type: jwt.Service, ResponseType: "Weird"},
+			&jwt.Export{Name: "c", Subject: ".bad..subj.", Type: jwt.Stream, ResponseType: "Singleton", AllowTrace: true},
+			&jwt.Export{Name: "d", Subject: "acc.*.data", Type: jwt.Service, AccountTokenPosition: 3},
+			&jwt.Export{Name: "e", Subject: "plain.data", Type: jwt.Service, AccountTokenPosition: 1},
+			&jwt.Export{Name: "f", Subject: "s.*", Type: jwt.Service, AccountTokenPosition: 9},
+			&jwt.Export{Name: "g", Subject: "lat.svc", Type: jwt.Stream, Latency: &jwt.ServiceLatency{Sampling: 50, Results: "lat.>"},
+				ResponseThreshold: 5 * time.Second, Info: jwt.Info{InfoURL: "nohost"}},
+			&jwt.Export{Name: "h", Subject: "str.>", Type: jwt.Stream},
+			&jwt.Export{Name: "i", Subject: "str.x.y", Type: jwt.Stream},
+		)
+		ec.DefaultPermissions.Pub.Allow.Add("a..b", "jobs.* q")
+		ec.DefaultPermissions.Sub.Deny.Add(".lead")
+		ec.SigningKeys.Add("bogus-signing-key")
+		ec.Info = jwt.Info{Description: "ok", InfoURL: "ftp:noslashes"}
+		flawedExports, err := ec.Encode(okp)
+		must(err)
+		// imports: per-account service overlap, deprecated `to`, renaming refs, token cross-checks
+		zkp, _ := nkeys.CreateAccount()
+		zpk, _ := zkp.PublicKey()
+		act2 := jwt.NewActivationClaims(zpk) // grantee is NOT this account
+		act2.ImportSubject = "other.>"
+		act2.ImportType = jwt.Stream
+		act2.Expires = 1700000000 // expired: a time check the import cross-check must NOT copy
+		actTok, err := act2.Encode(xkp)
+		must(err)
+		xpk, _ := xkp.PublicKey()
+		ic2 := jwt.NewAccountClaims(apk)
+		ic2.Imports.Add(
+			&jwt.Import{Name: "s1", Subject: "svc.a", Account: otherpk, Type: jwt.Service},
+			&jwt.Import{Name: "s2", Subject: "svc.>", Account: otherpk, Type: jwt.Service},
+			&jwt.Import{Name: "s3", Subject: "svc.a", Account: otherpk, Type: jwt.Service},
+			&jwt.Import{Name: "t", Subject: "legacy.>", Account: otherpk, Type: jwt.Stream, To: "local.>", LocalSubject: "l.>"},
+			&jwt.Import{Name: "r", Subject: "i.one.*", Account: otherpk, Type: jwt.Stream, LocalSubject: "l.$3.x"},
+			&jwt.Import{Name: "k", Subject: "tok.data", Account: xpk, Type: jwt.Service, Token: actTok, Share: false},
+			&jwt.Import{Name: "sh", Subject: "shared.>", Account: otherpk, Type: jwt.Stream, Share: true},
+			&jwt.Import{Name: "bt", Subject: "bad.tok", Account: otherpk, Type: jwt.Stream, Token: "not-a-jwt"},
+		)
+		flawedImports, err := ic2.Encode(okp)
+		must(err)
+		// limits vs counts, wildcard exports forbidden
+		lc := jwt.NewAccountClaims(apk)
+		lc.Limits.Imports = 0
+		lc.Limits.Exports = 1
+		lc.Limits.WildcardExports = false
+		lc.Exports.Add(&jwt.Export{Name: "w1", Subject: "w.>", Type: jwt.Stream}, &jwt.Export{Name: "w2", Subject: "w.x", Type: jwt.Stream})
+		lc.Imports.Add(&jwt.Import{Name: "one", Subject: "one", Account: otherpk, Type: jwt.Stream})
+		flawedLimits, err := lc.Encode(okp)
+		must(err)
 		for name, content := range map[string]string{"flawed-expired.jwt": expired, "flawed-notyet.jwt": notyet,
 			"flawed-selfsigned.jwt": selfsigned, "flawed-to.jwt": deprecatedTo, "flawed-mapping.jwt": badMapping,
-			"flawed-user.jwt": badUser} {
+			"flawed-user.jwt": badUser, "flawed-exports.jwt": flawedExports, "flawed-imports.jwt": flawedImports,
+			"flawed-limits.jwt": flawedLimits} {
 			must(os.WriteFile(dir+"/"+name, []byte(content), 0600))
 		}
 		fmt.Println("OK")
