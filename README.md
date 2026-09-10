@@ -32,8 +32,10 @@ real nats-server in CI — encode/decode/verify, timing + chain validation,
 creds generation AND parsing (`parseDecoratedJWT`/`parseDecoratedNKey`/
 `parseDecoratedUserNKey`, plus `decorateJWT`/`decorateSeed`, byte-identical to
 Go). Un-ported fields survive decode→re-encode untouched. NOT ported (by
-choice): audience/tags on the legacy claim types, v1 token reading,
-activation hashID, xkey-encrypted callout traffic. Auth callout IS ported:
+choice): v1 token reading, generic claims, activation hashID,
+xkey-encrypted callout traffic. `aud`, `nbf` and `tags` ARE ported on every
+claim type (`addTags` gives Go's TagList normalization; a future-`nbf` user
+being refused by a real nats-server is a CI gate). Auth callout IS ported:
 account `authorization` config (`ExternalAuthorization`), plus
 `AuthorizationRequestClaims` / `AuthorizationResponseClaims` — in CI a
 `nats reply` service shelling out to this library answers real nats-server

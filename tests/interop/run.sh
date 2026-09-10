@@ -25,6 +25,9 @@
 #   9. auth callout: C++-minted account-with-authorization, server-signed
 #      request and responses pass Go Decode + Validate with no issues, and
 #      Go's goldens (incl. a REAL nats-server request) decode in C++
+#  10. aud / nbf / tags: C++-minted tokens of all four legacy types show the
+#      intended values in Go's typed parse (tags normalized Go-TagList-style);
+#      Go's goldens decode in C++
 set -eu
 
 BUILD_DIR=${1:?usage: run.sh <cmake-build-dir>}
@@ -136,6 +139,23 @@ done
 "$CPP" decode authorization_request "$REPO/tests/fixtures/auth-request-server.jwt" >/dev/null \
     || fail "C++ rejected the REAL nats-server authorization request fixture"
 check "auth callout: C++ artifacts pass Go Decode+Validate; Go's (and nats-server's) decode in C++"
+
+# 10 ── aud / nbf / tags, both directions
+mkdir -p "$TMP/fields-cpp" "$TMP/fields-go"
+"$CPP" genfields "$TMP/fields-cpp" >/dev/null
+for pair in 'operator:aud=aud-op nbf=1700000000 tags=[east prod]' \
+            'account:aud=aud-acc nbf=1700000001 tags=[billing]' \
+            'user:aud=aud-user nbf=1700000002 tags=[team:blue ops]' \
+            'activation:aud=aud-act nbf=1700000003 tags=[x]'; do
+    t=${pair%%:*}; expect=${pair#*:}
+    got=$("$GO" fields "$TMP/fields-cpp/fields-$t.jwt") || fail "Go rejected C++-minted fields-$t.jwt"
+    [ "$got" = "$expect" ] || fail "Go's typed parse of C++ fields-$t.jwt: expected '$expect', got '$got'"
+done
+"$GO" genfields "$TMP/fields-go" >/dev/null
+for t in operator account user activation; do
+    "$CPP" decode "$t" "$TMP/fields-go/fields-$t.jwt" >/dev/null || fail "C++ rejected Go-minted fields-$t.jwt"
+done
+check "aud/nbf/tags: C++ values land in Go's typed parse; Go's goldens decode in C++"
 
 echo
 echo "INTEROP PASS ($pass checks)"

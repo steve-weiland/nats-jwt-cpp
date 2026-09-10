@@ -1,4 +1,5 @@
 #pragma once
+#include <vector>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -36,13 +37,13 @@ namespace jwt {
 /// Go's IssueUserJWT: mints a SCOPED user (no permissions of its own — the
 /// account's scope template governs it) issued by an account scoped signing
 /// key, with issuer_account set. name defaults to the user's public key;
-/// expirationSeconds > 0 sets exp = now + that (0 = never expires).
-/// Divergence, documented: Go's optional tags parameter is not ported (tags
-/// are an un-ported field).
+/// expirationSeconds > 0 sets exp = now + that (0 = never expires); tags are
+/// added with Go's TagList.Add normalization (lower-case, trimmed, unique).
 [[nodiscard]] std::string issueUserJWT(const std::string& scopedSigningKeySeed,
                                        const std::string& accountId,
                                        const std::string& publicUserKey,
                                        const std::string& name = "",
-                                       std::int64_t expirationSeconds = 0);
+                                       std::int64_t expirationSeconds = 0,
+                                       const std::vector<std::string>& tags = {});
 
 } // namespace jwt

@@ -367,6 +367,9 @@ public:
     std::optional<std::string> name_;
     std::int64_t issuedAt_ = 0;
     std::int64_t expires_ = 0;
+    std::string audience_;
+    std::int64_t notBefore_ = 0;
+    std::vector<std::string> tags_;
     std::vector<std::string> signingKeys_;
     std::map<std::string, UserScope> scopes_;
 };
@@ -386,6 +389,12 @@ std::int64_t AccountClaims::expires() const { return impl_->expires_; }
 
 void AccountClaims::setName(const std::string& name) { impl_->name_ = name; }
 void AccountClaims::setExpires(std::int64_t exp) { impl_->expires_ = exp; }
+std::string AccountClaims::audience() const { return impl_->audience_; }
+void AccountClaims::setAudience(const std::string& audience) { impl_->audience_ = audience; }
+std::int64_t AccountClaims::notBefore() const { return impl_->notBefore_; }
+void AccountClaims::setNotBefore(std::int64_t nbf) { impl_->notBefore_ = nbf; }
+std::vector<std::string>& AccountClaims::tags() { return impl_->tags_; }
+const std::vector<std::string>& AccountClaims::tags() const { return impl_->tags_; }
 void AccountClaims::setIssuer(const std::string& issuerKey) { impl_->issuer_ = issuerKey; }
 void AccountClaims::addSigningKey(const std::string& publicKey) {
     impl_->signingKeys_.push_back(publicKey);
@@ -507,6 +516,8 @@ std::string AccountClaims::encodeWithSigner(const std::string& issuerPublicKey,
     if (impl_->expires_ > 0) {
         payload["exp"] = impl_->expires_;
     }
+    if (!impl_->audience_.empty()) payload["aud"] = impl_->audience_;
+    if (impl_->notBefore_ > 0) payload["nbf"] = impl_->notBefore_;
 
     // NATS-specific claims: start from the carried nats object, then
     // overwrite the fields this port manages.
@@ -574,6 +585,8 @@ std::string AccountClaims::encodeWithSigner(const std::string& issuerPublicKey,
     } else {
         nats_claims.erase("signing_keys");
     }
+    if (!impl_->tags_.empty()) nats_claims["tags"] = impl_->tags_;
+    else nats_claims.erase("tags");
     nats_claims["type"] = "account";
     nats_claims["version"] = JWT_VERSION;
     payload["nats"] = nats_claims;
@@ -728,6 +741,10 @@ std::unique_ptr<AccountClaims> decodeAccountClaims(const std::string& jwt) {
     if (payload.contains("exp")) {
         claims->setExpires(payload["exp"].get<std::int64_t>());
     }
+    claims->impl_->audience_ = payload.value("aud", "");
+    claims->impl_->notBefore_ = payload.value("nbf", std::int64_t{0});
+    if (nats.contains("tags") && nats["tags"].is_array())
+        claims->impl_->tags_ = nats["tags"].get<std::vector<std::string>>();
 
     // Extract signing keys if present — a mixed array: plain keys are
     // strings, scoped keys are user_scope objects (Go's SigningKeys map)

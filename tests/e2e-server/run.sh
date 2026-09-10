@@ -36,7 +36,10 @@
 #      JWT issued by A's signing key) and round-trips with A's responder;
 #      sentinel "mallory" is refused by the service; with the service down,
 #      alice is refused too (the server defers to the callout)
-#  11. negative control: the same connection WITHOUT creds is refused
+#  11. not-before: a user minted with nbf one hour out is refused (the
+#      server runs Go's Validate with time checks blocking); the same
+#      account's unrestricted user connects
+#  12. negative control: the same connection WITHOUT creds is refused
 #      (proves the server is actually enforcing the operator-mode auth our
 #      chain is supposed to satisfy — without this, check 2 could pass
 #      against an open server)
@@ -259,7 +262,20 @@ if docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
 fi
 check "AUTH CALLOUT: C++-minted response admits alice into A, refuses mallory; no service → nobody"
 
-# 11 ── negative control: no creds → refused
+# 11 ── NOT-BEFORE enforced: the nbf user's JWT is valid in an hour, not now
+autherr_before=$(docker logs "$SRV" 2>&1 | grep -c "authentication error" || true)
+if docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+        nats --server nats://"$SRV":4222 --creds /w/n.creds rtt >/dev/null 2>&1; then
+    fail "user with a future nbf was accepted — nbf not enforced"
+fi
+autherr_after=$(docker logs "$SRV" 2>&1 | grep -c "authentication error" || true)
+[ "$autherr_after" -gt "$autherr_before" ] || fail "server log lacks a new authentication-error line for the nbf user"
+docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+    nats --server nats://"$SRV":4222 --creds /w/u.creds rtt >/dev/null 2>&1 \
+    || fail "unrestricted user could not connect alongside the nbf check"
+check "NOT-BEFORE enforced: future-nbf user refused, unrestricted user fine"
+
+# 12 ── negative control: no creds → refused
 if docker run --rm --network "$NET" "$BOX_IMG" \
         nats --server nats://"$SRV":4222 rtt >/dev/null 2>&1; then
     fail "server accepted a connection WITHOUT credentials — auth not enforced"

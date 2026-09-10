@@ -1581,3 +1581,119 @@ TEST(AuthorizationClaimsTest, TamperedTokensAreRefused) {
         EXPECT_THROW((void)jwt::decode(token), jwt::Error) << fx;
     }
 }
+
+// ============================================================================
+// aud / nbf / tags on the legacy claim types (fix-plan group 6a). Go: aud and
+// nbf are ClaimsData (top level, omitempty); tags is GenericFields inside the
+// nats object (omitempty). TagList.Add lower-cases, trims, de-dups and drops
+// empties; Contains is case-insensitive; JSON decoding does NOT normalize.
+// nats-server (auth.go: juc.Validate + IsBlocking(true)) refuses a user whose
+// nbf is in the future — the e2e gates that.
+// ============================================================================
+
+TEST(GenericFieldsTest, GoGoldensDecodeTypedAndRebuildEqual) {
+    auto okp = nkeys::CreateOperator();
+    auto akp = nkeys::CreateAccount();
+    {
+        auto g = jwt::decodeOperatorClaims(readFixture2("fields-operator.jwt"));
+        EXPECT_EQ(g->audience(), "aud-op");
+        EXPECT_EQ(g->notBefore(), 1700000000);
+        EXPECT_EQ(g->tags(), (std::vector<std::string>{"east", "prod"}));
+        jwt::OperatorClaims oc(g->subject());
+        oc.setName("O");
+        oc.setAudience("aud-op");
+        oc.setNotBefore(1700000000);
+        jwt::addTags(oc.tags(), {"East", " Prod ", "east", ""});  // Go's TagList.Add
+        auto ours = oc.encode(okp->seedString());
+        auto payloadOf = [](const std::string& t) {
+            auto first = t.find('.'); auto second = t.find('.', first + 1);
+            auto b = jwt::internal::base64url_decode(t.substr(first + 1, second - first - 1));
+            auto j = nlohmann::json::parse(std::string(b.begin(), b.end()));
+            for (auto* k : {"iat", "jti", "iss", "sub"}) j.erase(k);
+            return j;
+        };
+        EXPECT_EQ(payloadOf(ours), payloadOf(readFixture2("fields-operator.jwt")));
+        EXPECT_EQ(natsObjectOf(g->encode(okp->seedString())), natsObjectOf(readFixture2("fields-operator.jwt")));
+    }
+    {
+        auto g = jwt::decodeAccountClaims(readFixture2("fields-account.jwt"));
+        EXPECT_EQ(g->audience(), "aud-acc");
+        EXPECT_EQ(g->notBefore(), 1700000001);
+        EXPECT_EQ(g->tags(), (std::vector<std::string>{"billing"}));
+        EXPECT_EQ(natsObjectOf(g->encode(okp->seedString())), natsObjectOf(readFixture2("fields-account.jwt")));
+    }
+    {
+        auto g = jwt::decodeUserClaims(readFixture2("fields-user.jwt"));
+        EXPECT_EQ(g->audience(), "aud-user");
+        EXPECT_EQ(g->notBefore(), 1700000002);
+        EXPECT_EQ(g->tags(), (std::vector<std::string>{"team:blue", "ops"}));
+        EXPECT_EQ(natsObjectOf(g->encode(akp->seedString())), natsObjectOf(readFixture2("fields-user.jwt")));
+    }
+    {
+        auto g = jwt::decodeActivationClaims(readFixture2("fields-activation.jwt"));
+        EXPECT_EQ(g->audience(), "aud-act");
+        EXPECT_EQ(g->notBefore(), 1700000003);
+        EXPECT_EQ(g->tags(), (std::vector<std::string>{"x"}));
+        EXPECT_EQ(natsObjectOf(g->encode(akp->seedString())), natsObjectOf(readFixture2("fields-activation.jwt")));
+    }
+}
+
+TEST(GenericFieldsTest, OmitemptyAndBaseAccessors) {
+    auto akp = nkeys::CreateAccount();
+    jwt::UserClaims uc(nkeys::CreateUser()->publicString());
+    auto tok = uc.encode(akp->seedString());
+    auto first = tok.find('.'); auto second = tok.find('.', first + 1);
+    auto b = jwt::internal::base64url_decode(tok.substr(first + 1, second - first - 1));
+    auto payload = nlohmann::json::parse(std::string(b.begin(), b.end()));
+    EXPECT_FALSE(payload.contains("aud"));
+    EXPECT_FALSE(payload.contains("nbf"));
+    EXPECT_FALSE(payload.at("nats").contains("tags"));
+    // through the Claims base interface
+    std::unique_ptr<jwt::Claims> base = jwt::decode(tok);
+    EXPECT_EQ(base->audience(), "");
+    EXPECT_EQ(base->notBefore(), 0);
+    EXPECT_TRUE(base->tags().empty());
+    // set, decode, clear, re-encode: typed fields own their keys
+    uc.setAudience("a"); uc.setNotBefore(5); uc.tags() = {"t"};
+    auto dec = jwt::decodeUserClaims(uc.encode(akp->seedString()));
+    EXPECT_EQ(dec->audience(), "a");
+    dec->setAudience(""); dec->setNotBefore(0); dec->tags().clear();
+    EXPECT_FALSE(natsObjectOf(dec->encode(akp->seedString())).contains("tags"));
+}
+
+TEST(GenericFieldsTest, TagHelpersMatchGoTagList) {
+    std::vector<std::string> tags;
+    jwt::addTags(tags, {"East", " Prod ", "east", "", "  "});
+    EXPECT_EQ(tags, (std::vector<std::string>{"east", "prod"}));
+    EXPECT_TRUE(jwt::tagsContain(tags, " EAST"));
+    EXPECT_FALSE(jwt::tagsContain(tags, "west"));
+    // decoding does NOT normalize (Go: plain []string unmarshal)
+    auto akp = nkeys::CreateAccount();
+    jwt::UserClaims uc(nkeys::CreateUser()->publicString());
+    uc.tags() = {"MiXed"};
+    EXPECT_EQ(jwt::decodeUserClaims(uc.encode(akp->seedString()))->tags(),
+              (std::vector<std::string>{"MiXed"}));
+}
+
+TEST(GenericFieldsTest, NotBeforeValidationUsesNbfNotIat) {
+    // Go never checks iat; nbf in the future is "claim is not yet valid"
+    auto okp = nkeys::CreateOperator();
+    jwt::OperatorClaims oc(okp->publicString());
+    oc.setNotBefore(4102444800);  // 2100-01-01
+    auto future = jwt::decode(oc.encode(okp->seedString()));
+    EXPECT_FALSE(jwt::validateNotBefore(*future, 0).valid);
+    EXPECT_TRUE(jwt::validateNotBefore(*future, 4102444800).valid);  // skew covers it
+    EXPECT_FALSE(jwt::validateTiming(*future, jwt::ValidationOptions::strict()).valid);
+    EXPECT_TRUE(jwt::validateTiming(*future, jwt::ValidationOptions{}).valid);  // nbf off by default
+    jwt::OperatorClaims plain(okp->publicString());
+    EXPECT_TRUE(jwt::validateNotBefore(*jwt::decode(plain.encode(okp->seedString())), 0).valid);
+}
+
+TEST(GenericFieldsTest, IssueUserJWTCarriesTags) {
+    auto akp = nkeys::CreateAccount();
+    auto scopedSK = nkeys::CreateAccount();
+    auto ukp = nkeys::CreateUser();
+    auto token = jwt::issueUserJWT(scopedSK->seedString(), akp->publicString(), ukp->publicString(),
+                                   "scoped", 0, {"Team:Blue", "ops"});
+    EXPECT_EQ(natsObjectOf(token).at("tags"), (std::vector<std::string>{"team:blue", "ops"}));
+}

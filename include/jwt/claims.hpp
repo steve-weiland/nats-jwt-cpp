@@ -38,6 +38,18 @@ public:
     /// Get the expiration timestamp (Unix seconds, 0 = no expiration)
     [[nodiscard]] virtual std::int64_t expires() const = 0;
 
+    /// `aud` (Go: ClaimsData.Audience); empty = absent.
+    [[nodiscard]] virtual std::string audience() const = 0;
+
+    /// `nbf` (Go: ClaimsData.NotBefore), Unix seconds; 0 = absent. Go's only
+    /// not-before rule: nbf > now is "claim is not yet valid" (iat is never
+    /// checked).
+    [[nodiscard]] virtual std::int64_t notBefore() const = 0;
+
+    /// `nats.tags` (Go: GenericFields.Tags). Decoded as-is; use addTags for
+    /// Go's TagList.Add normalization.
+    [[nodiscard]] virtual const std::vector<std::string>& tags() const = 0;
+
     /// Encode the claims to a JWT string signed with the given seed; the
     /// issuer is DERIVED from the seed (Go's doEncode), never taken on trust.
     [[nodiscard]] virtual std::string encode(const std::string& seed) const = 0;
@@ -55,6 +67,11 @@ public:
     /// Validate the claims structure
     virtual void validate() const = 0;
 };
+
+/// Go's TagList.Add: lower-case, trim, drop empties, de-duplicate.
+void addTags(std::vector<std::string>& tags, const std::vector<std::string>& add);
+/// Go's TagList.Contains: case-insensitive, trimmed.
+[[nodiscard]] bool tagsContain(const std::vector<std::string>& tags, std::string_view tag);
 
 /// Decode a JWT string into claims
 [[nodiscard]] std::unique_ptr<Claims> decode(const std::string& jwt);

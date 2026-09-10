@@ -123,6 +123,9 @@ public:
     [[nodiscard]] std::optional<std::string> name() const override;
     [[nodiscard]] std::int64_t issuedAt() const override;
     [[nodiscard]] std::int64_t expires() const override;
+    [[nodiscard]] std::string audience() const override;
+    [[nodiscard]] std::int64_t notBefore() const override;
+    [[nodiscard]] const std::vector<std::string>& tags() const override;
     [[nodiscard]] std::string encode(const std::string& seed) const override;
     [[nodiscard]] std::string encodeWithSigner(const std::string& issuerPublicKey,
                                                const SignFn& sign) const override;
@@ -131,6 +134,10 @@ public:
     // Account-specific
     void setName(const std::string& name);
     void setExpires(std::int64_t exp);
+    void setAudience(const std::string& audience);
+    void setNotBefore(std::int64_t nbf);
+    /// Mutable tags — jwt::addTags(claims.tags(), {...}) for Go's Add semantics.
+    [[nodiscard]] std::vector<std::string>& tags();
     void setIssuer(const std::string& issuerKey);
     void addSigningKey(const std::string& publicKey);
     [[nodiscard]] const std::vector<std::string>& signingKeys() const;

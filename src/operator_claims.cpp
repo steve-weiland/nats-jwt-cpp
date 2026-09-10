@@ -105,6 +105,9 @@ public:
     std::optional<std::string> name_;
     std::int64_t issuedAt_ = 0;
     std::int64_t expires_ = 0;
+    std::string audience_;
+    std::int64_t notBefore_ = 0;
+    std::vector<std::string> tags_;
     std::vector<std::string> signingKeys_;
     std::string accountServerURL_;
     std::vector<std::string> operatorServiceURLs_;
@@ -129,6 +132,12 @@ std::int64_t OperatorClaims::expires() const { return impl_->expires_; }
 
 void OperatorClaims::setName(const std::string& name) { impl_->name_ = name; }
 void OperatorClaims::setExpires(std::int64_t exp) { impl_->expires_ = exp; }
+std::string OperatorClaims::audience() const { return impl_->audience_; }
+void OperatorClaims::setAudience(const std::string& audience) { impl_->audience_ = audience; }
+std::int64_t OperatorClaims::notBefore() const { return impl_->notBefore_; }
+void OperatorClaims::setNotBefore(std::int64_t nbf) { impl_->notBefore_ = nbf; }
+std::vector<std::string>& OperatorClaims::tags() { return impl_->tags_; }
+const std::vector<std::string>& OperatorClaims::tags() const { return impl_->tags_; }
 void OperatorClaims::addSigningKey(const std::string& publicKey) {
     impl_->signingKeys_.push_back(publicKey);
 }
@@ -197,6 +206,8 @@ std::string OperatorClaims::encodeWithSigner(const std::string& issuerPublicKey,
     if (impl_->expires_ > 0) {
         payload["exp"] = impl_->expires_;
     }
+    if (!impl_->audience_.empty()) payload["aud"] = impl_->audience_;
+    if (impl_->notBefore_ > 0) payload["nbf"] = impl_->notBefore_;
 
     validateOperatorWiring(impl_->accountServerURL_, impl_->operatorServiceURLs_,
                            impl_->systemAccount_, impl_->assertServerVersion_,
@@ -225,6 +236,8 @@ std::string OperatorClaims::encodeWithSigner(const std::string& issuerPublicKey,
     if (impl_->strictSigningKeyUsage_)
         nats_claims["strict_signing_key_usage"] = true;
     else nats_claims.erase("strict_signing_key_usage");
+    if (!impl_->tags_.empty()) nats_claims["tags"] = impl_->tags_;
+    else nats_claims.erase("tags");
     nats_claims["type"] = "operator";
     nats_claims["version"] = JWT_VERSION;
     payload["nats"] = nats_claims;
@@ -327,6 +340,10 @@ std::unique_ptr<OperatorClaims> decodeOperatorClaims(const std::string& jwt) {
     if (payload.contains("exp")) {
         claims->setExpires(payload["exp"].get<std::int64_t>());
     }
+    claims->impl_->audience_ = payload.value("aud", "");
+    claims->impl_->notBefore_ = payload.value("nbf", std::int64_t{0});
+    if (nats.contains("tags") && nats["tags"].is_array())
+        claims->impl_->tags_ = nats["tags"].get<std::vector<std::string>>();
 
     claims->impl_->accountServerURL_ = nats.value("account_server_url", "");
     if (nats.contains("operator_service_urls")) {

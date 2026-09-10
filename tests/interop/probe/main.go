@@ -270,6 +270,66 @@ func main() {
 		must(os.WriteFile(dir+"/scoped-user.jwt", []byte(userJWT), 0600))
 		must(os.WriteFile(dir+"/scoped-user.apub", []byte(apk), 0600))
 		fmt.Println("OK")
+	case "genfields": // dir → operator/account/user/activation carrying aud + nbf + tags (group 6a)
+		dir := os.Args[2]
+		okp, _ := nkeys.CreateOperator()
+		opk, _ := okp.PublicKey()
+		akp, _ := nkeys.CreateAccount()
+		apk, _ := akp.PublicKey()
+		ukp, _ := nkeys.CreateUser()
+		upk, _ := ukp.PublicKey()
+		oc := jwt.NewOperatorClaims(opk)
+		oc.Name = "O"
+		oc.Audience = "aud-op"
+		oc.NotBefore = 1700000000
+		oc.Tags.Add("East", " Prod ", "east", "")
+		opJWT, err := oc.Encode(okp)
+		must(err)
+		ac := jwt.NewAccountClaims(apk)
+		ac.Name = "A"
+		ac.Audience = "aud-acc"
+		ac.NotBefore = 1700000001
+		ac.Tags.Add("Billing")
+		accJWT, err := ac.Encode(okp)
+		must(err)
+		uc := jwt.NewUserClaims(upk)
+		uc.Name = "U"
+		uc.Audience = "aud-user"
+		uc.NotBefore = 1700000002
+		uc.Tags.Add("Team:Blue", "ops")
+		userJWT, err := uc.Encode(akp)
+		must(err)
+		act := jwt.NewActivationClaims(apk)
+		act.Name = "grant"
+		act.Audience = "aud-act"
+		act.NotBefore = 1700000003
+		act.Tags.Add("X")
+		act.ImportSubject = "billing.charge"
+		act.ImportType = jwt.Service
+		actJWT, err := act.Encode(akp)
+		must(err)
+		for name, content := range map[string]string{"fields-operator.jwt": opJWT, "fields-account.jwt": accJWT,
+			"fields-user.jwt": userJWT, "fields-activation.jwt": actJWT} {
+			must(os.WriteFile(dir+"/"+name, []byte(content), 0600))
+		}
+		fmt.Println("OK")
+	case "fields": // jwt file → aud/nbf/tags as Go's typed parse sees them
+		data, err := os.ReadFile(os.Args[2])
+		must(err)
+		c, err := jwt.Decode(strings.TrimSpace(string(data)))
+		must(err)
+		var tags jwt.TagList
+		switch t := c.(type) {
+		case *jwt.OperatorClaims:
+			tags = t.Tags
+		case *jwt.AccountClaims:
+			tags = t.Tags
+		case *jwt.UserClaims:
+			tags = t.Tags
+		case *jwt.ActivationClaims:
+			tags = t.Tags
+		}
+		fmt.Printf("aud=%s nbf=%d tags=%v\n", c.Claims().Audience, c.Claims().NotBefore, tags)
 	case "genauth": // dir → auth-callout goldens: account with authorization, a rich request, responses (jwt / error)
 		dir := os.Args[2]
 		okp, _ := nkeys.CreateOperator()

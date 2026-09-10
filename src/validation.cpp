@@ -53,19 +53,19 @@ ValidationResult validateExpiration(const Claims& claims, std::int64_t clockSkew
 }
 
 ValidationResult validateNotBefore(const Claims& claims, std::int64_t clockSkewSeconds) {
-    std::int64_t iat = claims.issuedAt();
-
-    // If issuedAt is 0, skip validation
-    if (iat <= 0) {
+    // Go's only not-before rule (ClaimsData.Validate): nbf > now is "claim is
+    // not yet valid". iat is NEVER checked — the earlier iat-based rule here
+    // was an invention (corrected with group 6a; nats-server treats Go's
+    // time checks as blocking for user auth, so nbf is what matters).
+    std::int64_t nbf = claims.notBefore();
+    if (nbf <= 0) {
         return ValidationResult::success();
     }
 
     std::int64_t now = getCurrentTime();
-    std::int64_t issuedWithSkew = iat - clockSkewSeconds;
-
-    if (now < issuedWithSkew) {
+    if (nbf - clockSkewSeconds > now) {
         std::ostringstream oss;
-        oss << "JWT is not yet valid (iat: " << iat << ", now: " << now << ")";
+        oss << "claim is not yet valid (nbf: " << nbf << ", now: " << now << ")";
         return ValidationResult::failure(oss.str());
     }
 

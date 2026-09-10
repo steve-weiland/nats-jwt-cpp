@@ -6,6 +6,8 @@
 //   encode <dir>              writes op/acc/user.jwt + u.creds (direct issuance)
 //   encode-signer <dir>       the same files minted through encodeWithSigner —
 //                             an external-signer callback holds the keys
+//   genfields <dir>           operator/account/user/activation carrying
+//                             aud + nbf + tags (added Go-TagList-style)
 //   genauth <dir>             auth-callout artifacts: account with
 //                             authorization config, a server-signed request,
 //                             responses (jwt via signing key / error)
@@ -108,6 +110,17 @@ int main([[maybe_unused]] int argc, char** argv) try {
         rc.permissions().sub.allow = {"_INBOX.>"};
         std::string restrictedJwt = rc.encode(askp->seedString());
         std::string restrictedCreds = jwt::formatUserConfig(restrictedJwt, rkp->seedString());
+
+        // a NOT-YET-VALID user: nbf one hour out — nats-server runs Go's
+        // Validate on user JWTs with time checks BLOCKING (auth.go:
+        // IsBlocking(true)), so the e2e proves a future nbf is refused
+        auto nkp = nkeys::CreateUser();
+        jwt::UserClaims nbfc(nkp->publicString());
+        nbfc.setName("not-yet");
+        nbfc.setIssuerAccount(akp->publicString());
+        nbfc.setNotBefore(std::chrono::duration_cast<std::chrono::seconds>(
+                              std::chrono::system_clock::now().time_since_epoch()).count() + 3600);
+        std::string nbfCreds = jwt::formatUserConfig(nbfc.encode(askp->seedString()), nkp->seedString());
 
         // a WEBSOCKET-ONLY user: allowed_connection_types gates the transport —
         // the e2e proves the server refuses it on a plain TCP connection
@@ -247,7 +260,7 @@ int main([[maybe_unused]] int argc, char** argv) try {
                  {"u.creds", creds}, {"r.creds", restrictedCreds},
                  {"s.creds", scopedCreds}, {"l.creds", limitedCreds},
                  {"x.creds", exporterCreds}, {"sys.creds", sysCreds},
-                 {"w.creds", wsOnlyCreds},
+                 {"w.creds", wsOnlyCreds}, {"n.creds", nbfCreds},
                  {"callout.creds", calloutCreds}, {"alice.creds", aliceCreds},
                  {"mallory.creds", malloryCreds},
                  // what the callout SERVICE needs: C's and A's signing seeds
@@ -280,6 +293,32 @@ int main([[maybe_unused]] int argc, char** argv) try {
         uc.setProxyRequired(true);
         uc.allowedConnectionTypes() = {jwt::ConnectionType::Websocket, jwt::ConnectionType::Mqtt};
         std::ofstream(dir + "/rich-user.jwt") << uc.encode(akp->seedString());
+        std::cout << "OK\n";
+    } else if (mode == "genfields") { // dir → the four legacy types with aud/nbf/tags
+        std::string dir = argv[2];
+        auto okp = nkeys::CreateOperator();
+        auto akp = nkeys::CreateAccount();
+        auto ukp = nkeys::CreateUser();
+        jwt::OperatorClaims oc(okp->publicString());
+        oc.setName("O"); oc.setAudience("aud-op"); oc.setNotBefore(1700000000);
+        jwt::addTags(oc.tags(), {"East", " Prod ", "east", ""});
+        jwt::AccountClaims ac(akp->publicString());
+        ac.setName("A"); ac.setAudience("aud-acc"); ac.setNotBefore(1700000001);
+        jwt::addTags(ac.tags(), {"Billing"});
+        jwt::UserClaims uc(ukp->publicString());
+        uc.setName("U"); uc.setAudience("aud-user"); uc.setNotBefore(1700000002);
+        jwt::addTags(uc.tags(), {"Team:Blue", "ops"});
+        jwt::ActivationClaims act(akp->publicString());
+        act.setName("grant"); act.setAudience("aud-act"); act.setNotBefore(1700000003);
+        jwt::addTags(act.tags(), {"X"});
+        act.setImportSubject("billing.charge");
+        act.setImportType(jwt::ExportType::Service);
+        for (auto& [n, c] : std::vector<std::pair<std::string, std::string>>{
+                 {"fields-operator.jwt", oc.encode(okp->seedString())},
+                 {"fields-account.jwt", ac.encode(okp->seedString())},
+                 {"fields-user.jwt", uc.encode(akp->seedString())},
+                 {"fields-activation.jwt", act.encode(akp->seedString())}})
+            std::ofstream(dir + "/" + n) << c;
         std::cout << "OK\n";
     } else if (mode == "genauth") { // dir → C++-minted auth-callout artifacts for Go to decode + Validate
         std::string dir = argv[2];

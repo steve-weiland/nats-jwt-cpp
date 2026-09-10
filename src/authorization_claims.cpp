@@ -161,11 +161,13 @@ namespace {
     }
 
     json basePayload(std::int64_t iat, const std::string& iss, const std::string& sub,
-                     const std::optional<std::string>& name, std::int64_t exp, const std::string& aud) {
+                     const std::optional<std::string>& name, std::int64_t exp, const std::string& aud,
+                     std::int64_t nbf) {
         json p = {{"iat", iat}, {"iss", iss}, {"sub", sub}};
         if (name) p["name"] = *name;
         if (exp > 0) p["exp"] = exp;
         if (!aud.empty()) p["aud"] = aud;
+        if (nbf > 0) p["nbf"] = nbf;
         return p;
     }
 } // namespace
@@ -181,6 +183,8 @@ public:
     std::int64_t issuedAt_ = 0;
     std::int64_t expires_ = 0;
     std::string audience_;
+    std::int64_t notBefore_ = 0;
+    std::vector<std::string> tags_;
     ServerID server_;
     std::string userNkey_;
     ClientInformation client_;
@@ -204,6 +208,10 @@ void AuthorizationRequestClaims::setName(const std::string& name) { impl_->name_
 void AuthorizationRequestClaims::setExpires(std::int64_t exp) { impl_->expires_ = exp; }
 void AuthorizationRequestClaims::setAudience(const std::string& audience) { impl_->audience_ = audience; }
 std::string AuthorizationRequestClaims::audience() const { return impl_->audience_; }
+std::int64_t AuthorizationRequestClaims::notBefore() const { return impl_->notBefore_; }
+void AuthorizationRequestClaims::setNotBefore(std::int64_t nbf) { impl_->notBefore_ = nbf; }
+std::vector<std::string>& AuthorizationRequestClaims::tags() { return impl_->tags_; }
+const std::vector<std::string>& AuthorizationRequestClaims::tags() const { return impl_->tags_; }
 ServerID& AuthorizationRequestClaims::server() { return impl_->server_; }
 const ServerID& AuthorizationRequestClaims::server() const { return impl_->server_; }
 void AuthorizationRequestClaims::setUserNkey(const std::string& k) { impl_->userNkey_ = k; }
@@ -248,7 +256,7 @@ std::string AuthorizationRequestClaims::encodeWithSigner(const std::string& issu
     validate();
 
     json payload = basePayload(impl_->issuedAt_, impl_->issuer_, impl_->subject_, impl_->name_,
-                               impl_->expires_, impl_->audience_);
+                               impl_->expires_, impl_->audience_, impl_->notBefore_);
     json nats = impl_->natsRaw_;
     nats["server_id"] = serverIdToJson(impl_->server_);
     nats["user_nkey"] = impl_->userNkey_;
@@ -256,6 +264,7 @@ std::string AuthorizationRequestClaims::encodeWithSigner(const std::string& issu
     nats["connect_opts"] = connectOptsToJson(impl_->connect_);
     if (impl_->tls_) nats["client_tls"] = clientTlsToJson(*impl_->tls_); else nats.erase("client_tls");
     putIfSet(nats, "request_nonce", impl_->requestNonce_);
+    putIfSet(nats, "tags", impl_->tags_);
     nats["type"] = "authorization_request";
     nats["version"] = JWT_VERSION;
     payload["nats"] = nats;
@@ -274,6 +283,8 @@ std::unique_ptr<AuthorizationRequestClaims> decodeAuthorizationRequestClaims(con
     if (payload.contains("name")) d.name_ = payload["name"].get<std::string>();
     if (payload.contains("exp")) d.expires_ = payload["exp"].get<std::int64_t>();
     d.audience_ = payload.value("aud", "");
+    d.notBefore_ = payload.value("nbf", std::int64_t{0});
+    if (nats.contains("tags") && nats["tags"].is_array()) d.tags_ = nats["tags"].get<std::vector<std::string>>();
     if (nats.contains("server_id") && nats["server_id"].is_object()) d.server_ = serverIdFromJson(nats["server_id"]);
     d.userNkey_ = nats.value("user_nkey", "");
     if (nats.contains("client_info") && nats["client_info"].is_object())
@@ -298,6 +309,8 @@ public:
     std::int64_t issuedAt_ = 0;
     std::int64_t expires_ = 0;
     std::string audience_;
+    std::int64_t notBefore_ = 0;
+    std::vector<std::string> tags_;
     std::string jwt_;
     std::string error_;
     std::optional<std::string> issuerAccount_;
@@ -318,6 +331,10 @@ void AuthorizationResponseClaims::setName(const std::string& name) { impl_->name
 void AuthorizationResponseClaims::setExpires(std::int64_t exp) { impl_->expires_ = exp; }
 void AuthorizationResponseClaims::setAudience(const std::string& a) { impl_->audience_ = a; }
 std::string AuthorizationResponseClaims::audience() const { return impl_->audience_; }
+std::int64_t AuthorizationResponseClaims::notBefore() const { return impl_->notBefore_; }
+void AuthorizationResponseClaims::setNotBefore(std::int64_t nbf) { impl_->notBefore_ = nbf; }
+std::vector<std::string>& AuthorizationResponseClaims::tags() { return impl_->tags_; }
+const std::vector<std::string>& AuthorizationResponseClaims::tags() const { return impl_->tags_; }
 void AuthorizationResponseClaims::setJwt(const std::string& j) { impl_->jwt_ = j; }
 std::string AuthorizationResponseClaims::jwt() const { return impl_->jwt_; }
 void AuthorizationResponseClaims::setError(const std::string& e) { impl_->error_ = e; }
@@ -361,12 +378,13 @@ std::string AuthorizationResponseClaims::encodeWithSigner(const std::string& iss
     validate();
 
     json payload = basePayload(impl_->issuedAt_, impl_->issuer_, impl_->subject_, impl_->name_,
-                               impl_->expires_, impl_->audience_);
+                               impl_->expires_, impl_->audience_, impl_->notBefore_);
     json nats = impl_->natsRaw_;
     putIfSet(nats, "jwt", impl_->jwt_);
     putIfSet(nats, "error", impl_->error_);
     if (impl_->issuerAccount_) nats["issuer_account"] = *impl_->issuerAccount_;
     else nats.erase("issuer_account");
+    putIfSet(nats, "tags", impl_->tags_);
     nats["type"] = "authorization_response";
     nats["version"] = JWT_VERSION;
     payload["nats"] = nats;
@@ -385,6 +403,8 @@ std::unique_ptr<AuthorizationResponseClaims> decodeAuthorizationResponseClaims(c
     if (payload.contains("name")) d.name_ = payload["name"].get<std::string>();
     if (payload.contains("exp")) d.expires_ = payload["exp"].get<std::int64_t>();
     d.audience_ = payload.value("aud", "");
+    d.notBefore_ = payload.value("nbf", std::int64_t{0});
+    if (nats.contains("tags") && nats["tags"].is_array()) d.tags_ = nats["tags"].get<std::vector<std::string>>();
     d.jwt_ = nats.value("jwt", "");
     d.error_ = nats.value("error", "");
     if (nats.contains("issuer_account")) d.issuerAccount_ = nats["issuer_account"].get<std::string>();

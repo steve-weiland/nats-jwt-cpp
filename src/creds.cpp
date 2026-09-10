@@ -81,7 +81,8 @@ std::string issueUserJWT(const std::string& scopedSigningKeySeed,
                          const std::string& accountId,
                          const std::string& publicUserKey,
                          const std::string& name,
-                         std::int64_t expirationSeconds) {
+                         std::int64_t expirationSeconds,
+                         const std::vector<std::string>& tags) {
     if (!nkeys::IsValidPublicAccountKey(accountId)) {
         throw InvalidClaimsError("issueUserJWT requires an account key for accountId");
     }
@@ -98,6 +99,7 @@ std::string issueUserJWT(const std::string& scopedSigningKeySeed,
                               .count() +
                           expirationSeconds);
     }
+    addTags(claims.tags(), tags);
     return claims.encode(scopedSigningKeySeed);
 }
 

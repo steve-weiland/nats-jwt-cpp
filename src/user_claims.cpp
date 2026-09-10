@@ -131,6 +131,9 @@ public:
     std::optional<std::string> name_;
     std::int64_t issuedAt_ = 0;
     std::int64_t expires_ = 0;
+    std::string audience_;
+    std::int64_t notBefore_ = 0;
+    std::vector<std::string> tags_;
     std::optional<std::string> issuerAccount_;
 };
 
@@ -149,6 +152,12 @@ std::int64_t UserClaims::expires() const { return impl_->expires_; }
 
 void UserClaims::setName(const std::string& name) { impl_->name_ = name; }
 void UserClaims::setExpires(std::int64_t exp) { impl_->expires_ = exp; }
+std::string UserClaims::audience() const { return impl_->audience_; }
+void UserClaims::setAudience(const std::string& audience) { impl_->audience_ = audience; }
+std::int64_t UserClaims::notBefore() const { return impl_->notBefore_; }
+void UserClaims::setNotBefore(std::int64_t nbf) { impl_->notBefore_ = nbf; }
+std::vector<std::string>& UserClaims::tags() { return impl_->tags_; }
+const std::vector<std::string>& UserClaims::tags() const { return impl_->tags_; }
 void UserClaims::setIssuer(const std::string& issuerKey) { impl_->issuer_ = issuerKey; }
 void UserClaims::setIssuerAccount(const std::string& accountPublicKey) {
     impl_->issuerAccount_ = accountPublicKey;
@@ -238,6 +247,8 @@ std::string UserClaims::encodeWithSigner(const std::string& issuerPublicKey,
     if (impl_->expires_ > 0) {
         payload["exp"] = impl_->expires_;
     }
+    if (!impl_->audience_.empty()) payload["aud"] = impl_->audience_;
+    if (impl_->notBefore_ > 0) payload["nbf"] = impl_->notBefore_;
 
     validatePermissions(impl_->permissions_);
     validateLimits(impl_->limits_);
@@ -286,6 +297,8 @@ std::string UserClaims::encodeWithSigner(const std::string& issuerPublicKey,
     } else {
         nats_claims.erase("allowed_connection_types");
     }
+    if (!impl_->tags_.empty()) nats_claims["tags"] = impl_->tags_;
+    else nats_claims.erase("tags");
     nats_claims["type"] = "user";
     nats_claims["version"] = JWT_VERSION;
     payload["nats"] = nats_claims;
@@ -435,6 +448,10 @@ std::unique_ptr<UserClaims> decodeUserClaims(const std::string& jwt) {
     if (payload.contains("exp")) {
         claims->setExpires(payload["exp"].get<std::int64_t>());
     }
+    claims->impl_->audience_ = payload.value("aud", "");
+    claims->impl_->notBefore_ = payload.value("nbf", std::int64_t{0});
+    if (nats.contains("tags") && nats["tags"].is_array())
+        claims->impl_->tags_ = nats["tags"].get<std::vector<std::string>>();
 
     // Extract issuer_account if present
     if (nats.contains("issuer_account")) {

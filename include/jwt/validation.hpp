@@ -71,8 +71,8 @@ struct ValidationOptions {
 ValidationResult validateExpiration(const Claims& claims, std::int64_t clockSkewSeconds = 0);
 
 /**
- * Check if a JWT is not yet valid (nbf - not before)
- * Note: NATS JWTs use 'iat' (issued at) as the not-before time
+ * Check if a JWT is not yet valid (nbf - not before). Go parity: only `nbf`
+ * is consulted; `iat` is never a validity bound.
  * @param claims The claims to validate
  * @param clockSkewSeconds Clock skew tolerance in seconds
  * @return ValidationResult indicating if the JWT is not yet valid

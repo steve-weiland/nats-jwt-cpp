@@ -137,8 +137,14 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
 
 ## Known gaps
 
-Scope cuts are documented in the README (aud/tags on legacy types, v1
-reading, activation hashID, xkey-encrypted callout traffic). Auth callout is
+Scope cuts are documented in the README (v1 reading, generic claims,
+activation hashID, xkey-encrypted callout traffic). `aud`/`nbf`/`tags` are
+on the Claims base (group 6a). Correction recorded there: the old
+`validateNotBefore` used iat as the not-before bound — Go has a real `nbf`
+and NEVER checks iat; nats-server treats Go's time checks as blocking for
+user auth (auth.go `IsBlocking(true)`), so a future nbf is refused (e2e
+check 11). Tags are normalized ONLY via `addTags` (Go: TagList.Add); decode
+keeps them as-is (Go: plain unmarshal). Auth callout is
 ported — `ExternalAuthorization` on accounts (ALWAYS on the wire, `{}` when
 unset — Go never omits the struct), `AuthorizationRequestClaims` (issued by
 SERVER keys only; `aud` is the constant "nats-authorization-request") and

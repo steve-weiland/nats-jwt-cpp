@@ -27,6 +27,9 @@ public:
     std::optional<std::string> name_;
     std::int64_t issuedAt_ = 0;
     std::int64_t expires_ = 0;
+    std::string audience_;
+    std::int64_t notBefore_ = 0;
+    std::vector<std::string> tags_;
     std::string importSubject_;
     ExportType importType_ = ExportType::Unknown;
     std::optional<std::string> issuerAccount_;
@@ -46,6 +49,12 @@ std::int64_t ActivationClaims::issuedAt() const { return impl_->issuedAt_; }
 std::int64_t ActivationClaims::expires() const { return impl_->expires_; }
 void ActivationClaims::setName(const std::string& name) { impl_->name_ = name; }
 void ActivationClaims::setExpires(std::int64_t exp) { impl_->expires_ = exp; }
+std::string ActivationClaims::audience() const { return impl_->audience_; }
+void ActivationClaims::setAudience(const std::string& audience) { impl_->audience_ = audience; }
+std::int64_t ActivationClaims::notBefore() const { return impl_->notBefore_; }
+void ActivationClaims::setNotBefore(std::int64_t nbf) { impl_->notBefore_ = nbf; }
+std::vector<std::string>& ActivationClaims::tags() { return impl_->tags_; }
+const std::vector<std::string>& ActivationClaims::tags() const { return impl_->tags_; }
 void ActivationClaims::setImportSubject(const std::string& subject) {
     impl_->importSubject_ = subject;
 }
@@ -88,12 +97,16 @@ std::string ActivationClaims::encodeWithSigner(const std::string& issuerPublicKe
     };
     if (impl_->name_) payload["name"] = *impl_->name_;
     if (impl_->expires_ > 0) payload["exp"] = impl_->expires_;
+    if (!impl_->audience_.empty()) payload["aud"] = impl_->audience_;
+    if (impl_->notBefore_ > 0) payload["nbf"] = impl_->notBefore_;
 
     json nats_claims = impl_->natsRaw_;
     nats_claims["subject"] = impl_->importSubject_;
     nats_claims["kind"] = exportTypeToString(impl_->importType_);
     if (impl_->issuerAccount_) nats_claims["issuer_account"] = *impl_->issuerAccount_;
     else nats_claims.erase("issuer_account");
+    if (!impl_->tags_.empty()) nats_claims["tags"] = impl_->tags_;
+    else nats_claims.erase("tags");
     nats_claims["type"] = "activation";
     nats_claims["version"] = JWT_VERSION;
     payload["nats"] = nats_claims;
@@ -172,6 +185,10 @@ std::unique_ptr<ActivationClaims> decodeActivationClaims(const std::string& jwt)
     claims->impl_->issuedAt_ = payload.at("iat").get<std::int64_t>();
     if (payload.contains("name")) claims->setName(payload["name"].get<std::string>());
     if (payload.contains("exp")) claims->setExpires(payload["exp"].get<std::int64_t>());
+    claims->impl_->audience_ = payload.value("aud", "");
+    claims->impl_->notBefore_ = payload.value("nbf", std::int64_t{0});
+    if (nats.contains("tags") && nats["tags"].is_array())
+        claims->impl_->tags_ = nats["tags"].get<std::vector<std::string>>();
     claims->impl_->importSubject_ = nats.value("subject", "");
     const std::string kind = nats.value("kind", "");
     claims->impl_->importType_ = kind == "stream"  ? ExportType::Stream

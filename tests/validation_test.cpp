@@ -88,11 +88,8 @@ TEST(ValidationTest, NotYetValidTokenIsInvalid) {
     std::string jwt = claims.encode(kp->seedString());
     auto decoded = jwt::decode(jwt);
 
-    // Hack: directly set issuedAt to future time
-    // (In real scenarios this would come from a JWT issued in the future)
-    // For testing, we'll just validate current timestamp against future
+    // no nbf set: never "not yet valid" (Go never checks iat)
     auto result = jwt::validateNotBefore(*decoded, 0);
-    // Should pass because issuedAt is current time (auto-set)
     EXPECT_TRUE(result.valid);
 }
 

@@ -89,6 +89,9 @@ public:
     [[nodiscard]] std::optional<std::string> name() const override;
     [[nodiscard]] std::int64_t issuedAt() const override;
     [[nodiscard]] std::int64_t expires() const override;
+    [[nodiscard]] std::string audience() const override;
+    [[nodiscard]] std::int64_t notBefore() const override;
+    [[nodiscard]] const std::vector<std::string>& tags() const override;
     [[nodiscard]] std::string encode(const std::string& seed) const override;
     [[nodiscard]] std::string encodeWithSigner(const std::string& issuerPublicKey,
                                                const SignFn& sign) const override;
@@ -98,7 +101,8 @@ public:
     void setExpires(std::int64_t exp);
     /// `aud` — the server sets AuthRequestAudience. Empty = absent.
     void setAudience(const std::string& audience);
-    [[nodiscard]] std::string audience() const;
+    void setNotBefore(std::int64_t nbf);
+    [[nodiscard]] std::vector<std::string>& tags();
 
     [[nodiscard]] ServerID& server();
     [[nodiscard]] const ServerID& server() const;
@@ -141,6 +145,9 @@ public:
     [[nodiscard]] std::optional<std::string> name() const override;
     [[nodiscard]] std::int64_t issuedAt() const override;
     [[nodiscard]] std::int64_t expires() const override;
+    [[nodiscard]] std::string audience() const override;
+    [[nodiscard]] std::int64_t notBefore() const override;
+    [[nodiscard]] const std::vector<std::string>& tags() const override;
     [[nodiscard]] std::string encode(const std::string& seed) const override;
     [[nodiscard]] std::string encodeWithSigner(const std::string& issuerPublicKey,
                                                const SignFn& sign) const override;
@@ -150,7 +157,8 @@ public:
     void setExpires(std::int64_t exp);
     /// `aud` — REQUIRED: the requesting server's ID (a server public key).
     void setAudience(const std::string& serverPublicKey);
-    [[nodiscard]] std::string audience() const;
+    void setNotBefore(std::int64_t nbf);
+    [[nodiscard]] std::vector<std::string>& tags();
     /// The user JWT to admit (exactly one of jwt / error must be set).
     void setJwt(const std::string& userJwt);
     [[nodiscard]] std::string jwt() const;
