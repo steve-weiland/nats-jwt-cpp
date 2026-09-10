@@ -88,6 +88,12 @@ if (JWT_USE_SYSTEM_NKEYS)
     if (nkeys_FOUND)
         message(STATUS "Using system-installed nkeys-cpp")
         set(_have_nkeys TRUE)
+        # An IMPORTED target is directory-scoped: when this project is
+        # add_subdirectory'd, the embedder could not resolve nkeys::nkeys (nor
+        # the $<LINK_ONLY:nkeys::nkeys> our static export carries) — measured
+        # by the packaging gate's embed check on a host with nkeys installed.
+        # The FetchContent path's alias is global already; match it.
+        set_target_properties(nkeys::nkeys PROPERTIES IMPORTED_GLOBAL TRUE)
     endif()
 endif()
 
