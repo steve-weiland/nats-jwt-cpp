@@ -10,17 +10,48 @@ same armor regex real NATS clients use.
 
 ## Features
 
-- **Three-tier hierarchy**: Operator → Account → User claims
-- **Authenticated decode**: signature verified against the embedded issuer
-  before claims are returned (Go-parity; tampered tokens throw)
-- **Ed25519 signatures**: Secure cryptography via nkeys-cpp
-- **JWT validation**: Time-based, chain (signing-key aware), and hierarchy
-  validation
-- **NATS credentials**: Generate standard `.creds` files (byte-identical to
-  Go's format)
-- **Typed errors**: every failure derives from `jwt::Error`
-- **CLI tool**: `jwt++` command-line utility
-- **Modern C++20**: Type-safe API with RAII, exceptions, and smart pointers
+A complete C++20 port of Go's [nats-io/jwt v2](https://github.com/nats-io/jwt),
+gated against the Go library and a real nats-server in CI.
+
+- **Every claim type**: operator, account, user, activation, authorization
+  request/response (auth callout), and generic claims for anything else
+- **Authenticated decode**: the signature is verified against the embedded
+  issuer and the issuer's key kind is enforced per claim type before any
+  claim is returned (Go's `Decode`); tampered or mis-signed tokens throw
+- **Full account configuration**: limits (incl. JetStream and tiered
+  limits), default permissions, weighted subject mappings, exports/imports
+  with activation tokens, revocation lists, plain and scoped signing keys,
+  external authorization (auth callout) config, resolver wiring on operators
+- **User permissions and limits**: pub/sub allow/deny, response permissions,
+  subscription/data/payload limits, source CIDRs, time windows, bearer and
+  connection-type flags — enforced against a real nats-server in CI
+- **Auth callout**: decode server-minted authorization requests and mint
+  responses; xkey-encrypted (sealed) callout traffic supported, with the
+  server's curve key cross-checked between the header and the signed claim
+- **External signers**: `encodeWithSigner` signs through a callback so
+  private keys can stay in an HSM/KMS; the returned signature is verified
+  before a token is emitted
+- **Go-shaped validation**: `validate(ValidationResults&)` accumulates every
+  finding with Go's texts (blocking errors, warnings, exp/nbf time checks);
+  the throwing `validate()` and encode refuse blocking issues, while decode
+  keeps Go-mintable-but-flawed tokens inspectable
+- **Chain and timing validation**: issuer chains through identity and signing
+  keys, scoped-signer rules, `exp`/`nbf`
+- **Credentials**: generate and parse `.creds` files byte-identically to Go
+  (`formatUserConfig`, `parseDecoratedJWT`, `decorateJWT`, `issueUserJWT`)
+- **Legacy and tooling**: v1 tokens decode and re-encode as v2; activation
+  `hashID()` for nsc-style storage
+- **Hardened input handling**: every failure is a `jwt::Error`, integers are
+  read strictly, base64url is canonical, tokens are capped at 1 MB before
+  any work
+- **CLI tool**: `jwt++` for encoding, decoding, verifying and creds
+- **Modern C++20**: type-safe API with pimpl, RAII, exceptions and smart
+  pointers; the public headers pull in no third-party headers (the creds
+  parsers return a forward-declared `nkeys::KeyPair`, so consumers of those
+  two functions include nkeys themselves)
+
+Not ported: the account `trace` / `cluster_traffic` fields (carried through
+re-encode untouched, not typed or validated).
 
 ## Quick Start
 
