@@ -25,18 +25,25 @@ If you discover a security vulnerability, please report it privately:
 - Security level: 128-bit (equivalent to AES-128)
 
 **JWT Algorithm**
-- Header: `{"typ": "JWT", "alg": "ed25519-nkey"}`
-- Signature: Ed25519 over `header.payload` (Base64 URL encoded)
-- Encoding: Base64 URL without padding (RFC 4648 §5)
+- Header: `{"alg":"ed25519-nkey","typ":"JWT"}` as emitted (our JSON library
+  writes keys alphabetically; Go writes `typ` first; every decoder ignores
+  order). Decoding also accepts v1 tokens (`"alg":"ed25519"`).
+- Signature: Ed25519 over `header.payload` for v2 tokens (what this library
+  mints); v1 tokens, read-only, signed the payload chunk alone (Go parity).
+- Encoding: Base64 URL without padding (RFC 4648 §5) — padding is REFUSED on
+  decode, so a token string has exactly one valid spelling (Go's
+  RawURLEncoding behaves the same).
 
 ### JWT-Specific Security Features
 
 **Claim Validation**
-- Subject/Issuer verification
-- Expiration timestamp checking (`exp` field)
-- Issued-at timestamp validation (`iat` field)
-- Trust hierarchy enforcement (Operator → Account → User)
-- Required field validation
+- Subject/Issuer verification (full nkey validity, not a prefix byte)
+- Expiration (`exp`) and not-before (`nbf`) as Go time checks; `iat` is
+  never a validity bound (Go parity)
+- Trust hierarchy enforcement (Operator → Account → User) through chain
+  validation
+- Go's per-type rules, accumulated in `validate(ValidationResults&)`; the
+  throwing `validate()` and encode refuse blocking issues
 
 **Signature Verification**
 - `decode()`/`decodeXClaims()` are AUTHENTICATED: the Ed25519 signature over
@@ -48,7 +55,11 @@ If you discover a security vulnerability, please report it privately:
   `validateIssuerChain`) against an operator you already trust, never from
   the token itself.
 - Constant-time comparison (via nkeys-cpp)
-- Key type validation (User JWT signed by Account key, etc.)
+- Issuer key KIND is enforced at decode for every claim type (Go's
+  ExpectedPrefixes): operator←operator, account←operator|account,
+  user←account, activation←account|operator, authorization request←server,
+  authorization response←account. A correctly signed token from the wrong
+  kind of key does not decode.
 
 ### External Signers (HSM / KMS custody)
 
@@ -88,20 +99,27 @@ implemented.
 
 ### Memory Security
 
-**Sensitive Data Handling**
+**What is and is not wiped — measured, not aspirational**
 
-JWT tokens themselves are public (signed, not encrypted), but the library must protect:
+JWT tokens themselves are public (signed, not encrypted). Private material
+enters this library only as the seed string passed to `encode(seed)`:
 
-1. **Seeds/Private Keys**: Handled by nkeys-cpp with automatic wiping
-2. **Temporary Buffers**: Wiped after encoding/decoding operations
-3. **RAII Guards**: Exception-safe cleanup of sensitive data
+1. **The `nkeys::KeyPair` derived from that seed** is wiped by nkeys-cpp when
+   it goes out of scope (also on exception).
+2. **The caller's seed string itself is the caller's** (`const std::string&`)
+   — this library does not and cannot wipe it. Use `encodeWithSigner` to keep
+   private keys out of the process entirely.
+3. **Decoded payloads and intermediate buffers are ordinary `std::string` /
+   JSON values** and are NOT wiped; they contain only the public token
+   content.
 
-**Delegation to nkeys-cpp**
+**Cryptography**
 
-This library does not implement cryptographic primitives. All sensitive operations (key generation, signing, verification) are delegated to nkeys-cpp, which provides:
-- Automatic memory wiping
-- Exception-safe key handling
-- Secure random number generation
+Key generation, signing and verification are nkeys-cpp (Monocypher). This
+library vendors two non-secret primitives of its own: SHA-512/256 (FIPS
+180-4 §5.3.6.2), used only for the `jti` content hash and validated against
+NIST vectors and an independent implementation in the tests; and base64url.
+Neither touches key material or signature verification.
 
 ### Input Validation
 
@@ -111,11 +129,18 @@ All public APIs perform strict validation:
 - **Base64 Encoding**: Valid Base64 URL characters only
 - **JSON Payloads**: Valid JSON structure required
 - **Claim Fields**: Required fields must be present
-- **Key Types**: Issuer key type must match claim type
+- **Key Types**: Issuer key kind must match the claim type (at decode AND encode)
 - **Signature Length**: Must be exactly 64 bytes
-- **Maximum Size**: JWT limited to 10MB (configurable via `MAX_JWT_SIZE`)
+- **Maximum Size**: 1 MB (`MAX_JWT_SIZE`, a constexpr = Go's MaxTokenSize),
+  checked before any other work
+- **Integers**: floats and out-of-range values are refused (Go's
+  encoding/json semantics), never converted or wrapped
 
-Invalid input results in exceptions, never undefined behavior.
+Invalid input results in a `jwt::Error` (MalformedTokenError,
+InvalidClaimsError or SignatureError) — never a third-party exception and
+never undefined behavior. A review found nlohmann exceptions escaping on
+hostile headers and wrong-typed fields; every decoder body now runs inside a
+translating guard and reads fields with strict typed accessors.
 
 ## Best Practices for Users
 
@@ -185,21 +210,25 @@ Operator (self-signed)
 ```
 
 **Validation Rules:**
-- Operator JWT: `subject == issuer` (self-signed)
-- Account JWT: `issuer` must be operator key
-- User JWT: `issuer` must be account key
-- Signing keys: Must be in parent's `signing_keys` list
+- Operator JWT: issued by an operator key (self-signed in practice)
+- Account JWT: issued by an operator key — or self-signed by the account
+  (Go's documented flow: self-sign, hand to the operator, re-sign). A
+  self-signed account decodes but does not chain.
+- User JWT: issued by an account key; `issuer_account` must name the parent
+- Signing keys: the issuer must be the parent's identity key or one of its
+  `signing_keys`
 
 ### Exception Safety
 
-All encoding/decoding functions use exception-safe patterns:
+Every failure is a `jwt::Error`; the keypair derived from the seed is
+wiped by nkeys-cpp on any path (the caller's seed string is not — see Memory
+Security):
 
 ```cpp
 try {
     std::string jwt = claims.encode(seed);
-    // Even if exception thrown, nkeys-cpp has wiped seed
-} catch (const std::exception& e) {
-    // Handle error safely
+} catch (const jwt::Error& e) {
+    // Malformed / invalid claims / signature — all derive from jwt::Error
 }
 ```
 
@@ -215,8 +244,10 @@ When built with `JWT_ENABLE_HARDENING=ON` (default), the following protections a
 **Fortified Sources**
 - `-D_FORTIFY_SOURCE=2`: Buffer overflow checks (Release builds)
 
-**Position Independent Execution (Linux)**
-- `-Wl,-z,relro,-z,now`: Read-only relocations, prevents GOT overwrites
+**RELRO + BIND_NOW (Linux)**
+- `-Wl,-z,relro,-z,now`: read-only relocations, prevents GOT overwrites.
+  Position-independent code comes from `CMAKE_POSITION_INDEPENDENT_CODE ON`
+  on every platform.
 
 ### Runtime Sanitizers
 
@@ -236,7 +267,7 @@ Development builds can enable:
 
 - **Cryptography**: Depends on nkeys-cpp platform support
   - macOS/Linux: Fully supported
-  - Windows: Limited by nkeys-cpp RNG support
+  - Windows: not currently supported by nkeys-cpp
 
 ### JWT Security Properties
 
@@ -248,14 +279,15 @@ Development builds can enable:
 **Expiration is Advisory**
 - Token expiration enforced by verifier, not cryptographically
 - Compromised token valid until expiration
-- No built-in revocation (use NATS revocation mechanisms)
+- Revocation lists are modeled (`revoke`/`revokeAt`/`isRevoked`,
+  `RevokeAll`) and carried in account JWTs; ENFORCING them is nats-server's
+  job (a CI gate proves the server refuses a revoked user)
 
 ### Denial of Service
 
-The library does not protect against:
-- Excessive JWT size (enforced by `MAX_JWT_SIZE` constant)
-- CPU exhaustion from signature verification
-- Memory exhaustion from large claim sets
+- Token size is capped at 1 MB before any parsing or verification.
+- The library does not protect against CPU exhaustion from many signature
+  verifications or memory exhaustion from many large (≤ 1 MB) tokens.
 
 ## Threat Model
 
@@ -264,7 +296,7 @@ The library does not protect against:
 The library protects against:
 - ✅ JWT forgery (Ed25519 signature security)
 - ✅ Token tampering (signature verification)
-- ✅ Key confusion (prefix validation via nkeys-cpp)
+- ✅ Key confusion (nkey prefix + CRC validation via nkeys-cpp; issuer kind per claim type at decode)
 - ✅ Timing attacks (constant-time signature verification)
 - ✅ Trust hierarchy violations (issuer validation)
 - ✅ Expired token acceptance (expiration checking)
@@ -296,7 +328,8 @@ The library does NOT protect against:
 
 - Uses [nkeys-cpp](https://github.com/steve-weiland/nkeys-cpp) for all cryptographic operations
 - nkeys-cpp uses [Monocypher](https://monocypher.org/), an audited library
-- No custom cryptographic code ("don't roll your own crypto")
+- No custom signature cryptography; the only vendored primitive is the
+  SHA-512/256 used for the `jti` content hash (see Memory Security)
 
 ## Compliance
 

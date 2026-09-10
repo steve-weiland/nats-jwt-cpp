@@ -101,9 +101,11 @@ off under sanitizers — an uninstrumented GTest under ASAN reports a bogus
 container-overflow), `JWT_ENABLE_ASAN`, `JWT_ENABLE_UBSAN`,
 `JWT_ENABLE_HARDENING` (default ON), `JWT_USE_SYSTEM_NKEYS` (default ON;
 falls back to FetchContent pinned to a tagged nkeys-cpp release),
-`JWT_BUILD_TESTS` (defaults to `PROJECT_IS_TOP_LEVEL`).
+`JWT_BUILD_TESTS`, `JWT_BUILD_CLI`, `JWT_INSTALL` (all default to
+`PROJECT_IS_TOP_LEVEL`), `JWT_BUILD_DRIVER` (the interop/e2e cpp_driver,
+default = JWT_BUILD_TESTS; the e2e toolbox image builds it alone).
 
-**Gates before claiming done** (CI runs all of these on every push —
+**Gates before claiming done** (CI runs all of these on every push to main and every PR —
 `.github/workflows/ci.yml` — but run them locally first):
 
 - full ctest on macOS AND the Linux container:
@@ -139,10 +141,15 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
 
 ## Architecture
 
-- `include/jwt/` — public API: `Claims` base + Operator/Account/User claims
-  (pimpl), `validation.hpp` (ValidationResult/Options, timing + chain),
-  `jwt_errors.hpp` (typed errors), constants (MAX_JWT_SIZE = Go's 1MB, checked
-  BEFORE any work).
+- `include/jwt/` — public API: `Claims` base + seven claim types (pimpl):
+  `operator_claims.hpp`, `account_claims.hpp` (+ limits/exports/imports/
+  revocations/authorization types), `user_claims.hpp` + `permissions.hpp`,
+  `activation_claims.hpp`, `authorization_claims.hpp`, `generic_claims.hpp`;
+  `validation.hpp` (ValidationResult/Options, timing + chain),
+  `validation_results.hpp` (Go's accumulated report), `creds.hpp` (creds
+  parse/decorate, issueUserJWT), `jwt_errors.hpp` (typed errors), constants
+  (MAX_JWT_SIZE = Go's 1MB, checked BEFORE any work). No public header
+  includes nkeys or nlohmann.
 - `src/jwt_utils.*` — parseJwt (size cap first), verifySignature (answers
   bool, never throws — malformed input is "no"), computeJti (vendored
   SHA-512/256, FIPS 180-4 §5.3.6.2, of the payload serialized jti-less,
@@ -166,7 +173,8 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
   tail), `addTimeChecks`/`throwFirstBlocking` (the validation report).
 - `src/base64url.*` — RFC 4648 URL alphabet, no padding.
 - Claim JSON is nlohmann (alphabetical key order — irrelevant to Go, which
-  ignores order); header is `{"typ":"JWT","alg":"ed25519-nkey"}`.
+  ignores order); the emitted header is `{"alg":"ed25519-nkey","typ":"JWT"}`
+  (alphabetical, unlike Go's typ-first — wire-irrelevant).
 - `src/tools/jwt-main.cpp` — `jwt++` CLI. `--sign-key` determines the issuer;
   there is no `--issuer` flag (it was dead weight once encode derived it).
 - `tests/fixtures/` — REAL Go-minted artifacts (operator/account/user JWTs,
@@ -207,7 +215,6 @@ the nats CLI DROPS `--creds` when `--user/--password` are also given, so the
 e2e authorizes on the sentinel's identity. The e2e's callout service is
 `nats reply --command` in a toolbox image (`tests/e2e-server/Dockerfile`:
 Linux cpp_driver + nats CLI) — the host driver cannot run inside nats-box.
-`aud` is typed on these two claim types only (group-6 work for the rest).
 External signers are ported
 (`encodeWithSigner`; the interop gate pushes signer-minted tokens through Go
 Decode). User permissions/limits ARE ported — real-server-enforced in CI

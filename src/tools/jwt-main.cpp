@@ -33,7 +33,7 @@ void printUsage() {
 Usage: jwt++ [command] [options]
 
 Commands:
-    --encode              Encode JWT from JSON claims
+    --encode              Mint a JWT from --type/--inkey/--sign-key/--name
     --decode              Decode and display JWT
     --verify              Verify JWT signature
     --generate-creds      Generate user credentials file

@@ -1,18 +1,21 @@
 # CI — the gates this repo runs locally, automated (nkeys-cpp pattern):
 #   test        build + full ctest on Linux (glibc) and macOS, warnings-as-errors
-#   alpine      musl gate, verbatim from CLAUDE.md
+#   alpine      musl gate, the CLAUDE.md command (plus --output-on-failure)
 #   sanitizers  ASAN + UBSAN over the full suite (fetched, instrumented GTest)
-#   interop     the live Go↔C++ matrix (tests/interop/run.sh): authenticated
-#               decode both ways, creds parseability via the real armor regex,
-#               the Go canonical chain through strict validation, tamper
-#               rejection on both sides
+#   interop     the live Go↔C++ matrix (tests/interop/run.sh, 12 checks):
+#               authenticated decode both ways, creds parseability, the Go
+#               canonical chain through strict validation, tamper rejection,
+#               typed-field parity, auth callout, aud/nbf/tags, validation
+#               REPORT parity on Go-flawed tokens, v1 + generic
 #   packaging   consumability gate (tests/packaging/test.sh): find_package
 #               static + shared against an installed nkeys-cpp (which also
 #               exercises the system-nkeys build path), pkg-config, embed
-#   e2e-server  the Go README's ending as a gate (tests/e2e-server/run.sh):
-#               a fully C++-minted trust chain (memory resolver.conf + creds)
-#               authenticates against a real nats-server — request/reply round
-#               trip, plus a no-creds negative control
+#   e2e-server  the Go README's ending as a gate (tests/e2e-server/run.sh,
+#               12 checks): a fully C++-minted trust chain authenticates
+#               against a real nats-server — permissions, scopes, account
+#               limits, cross-account exports, revocation, $SYS, connection
+#               types, AUTH CALLOUT (a C++ service answering the server),
+#               nbf, and a no-creds negative control
 name: CI
 
 on:

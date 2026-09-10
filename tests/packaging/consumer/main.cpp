@@ -1,10 +1,9 @@
 // Exercises one call from each API family so the gate proves linkage and
-// behavior, not just that headers were found. Note: no direct nkeys usage —
-// nkeys arrives transitively as a link dependency only.
+// behavior, not just that headers were found. nkeys is used directly too, so
+// the consumer proves nkeys::nkeys resolves in the consumer's scope.
 #include <jwt/jwt.hpp>
 #include <nkeys/nkeys.hpp>
 #include <cstdio>
-#include <vector>
 
 int main() {
     auto okp = nkeys::CreateOperator();
@@ -22,7 +21,6 @@ int main() {
     } catch (const jwt::Error&) {
     }
 
-    std::vector<std::string> chain = {op_jwt};
     if (!jwt::validate(op_jwt)) return 1;
 
     std::puts("CONSUMER-OK");

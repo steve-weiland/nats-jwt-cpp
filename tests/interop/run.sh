@@ -5,7 +5,7 @@
 #
 #   usage: tests/interop/run.sh <cmake-build-dir>
 #
-# Eight checks:
+# Twelve checks:
 #   1. C++-minted operator/account/user JWTs pass Go's authenticated Decode —
 #      minted both from seeds and through encodeWithSigner (external signer)
 #   2. C++-generated .creds parses via Go ParseDecoratedJWT (the armor regex
@@ -28,13 +28,13 @@
 #  10. aud / nbf / tags: C++-minted tokens of all four legacy types show the
 #      intended values in Go's typed parse (tags normalized Go-TagList-style);
 #      Go's goldens decode in C++
-#  12. v1 + generic: Go's v1compat-minted tokens (alg ed25519, payload-only
-#      signature, top-level type/tags/issuer_account) decode in C++ and
-#      re-encode as v2 tokens Go decodes; generic claims cross both ways
 #  11. validation report: tokens Go can MINT but its own Validate flags
 #      (Go's Encode does not validate) decode in C++ WITHOUT throwing, and the
 #      C++ report equals Go's issue list line-for-line (blocking/time flags +
 #      description)
+#  12. v1 + generic: Go's v1compat-minted tokens (alg ed25519, payload-only
+#      signature, top-level type/tags/issuer_account) decode in C++ and
+#      re-encode as v2 tokens Go decodes; generic claims cross both ways
 set -eu
 
 BUILD_DIR=${1:?usage: run.sh <cmake-build-dir>}

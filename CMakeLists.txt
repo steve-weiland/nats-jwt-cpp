@@ -72,7 +72,8 @@ if (JWT_ENABLE_HARDENING AND NOT MSVC)
         add_compile_definitions(_FORTIFY_SOURCE=2)
     endif()
 
-    # Position independent execution (PIE) for executables - Linux only
+    # RELRO + BIND_NOW (read-only GOT after startup) - Linux only; PIC itself
+    # comes from CMAKE_POSITION_INDEPENDENT_CODE above
     if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_link_options(-Wl,-z,relro,-z,now)
     endif()

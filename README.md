@@ -25,7 +25,8 @@ same armor regex real NATS clients use.
 ## Scope
 
 This is a deliberate PARTIAL port — what NATS authentication needs, not the
-whole Go surface. Ported: the three claim types with name/expiry/signing-keys/
+whole Go surface. Ported: seven claim types (operator, account, user,
+activation, authorization request/response, generic) with name/expiry/signing-keys/
 issuer_account, **user permissions (pub/sub allow/deny, response permissions)
 and limits (subs/data/payload, src CIDRs, time windows)** — enforced against a
 real nats-server in CI — encode/decode/verify, timing + chain validation,
@@ -160,7 +161,8 @@ std::string response_jwt = rs.encode(callout_account_seed);      // account key 
 // key is passed in; it becomes `iss` and the signature is checked against it
 std::string hsm_signed = user_claims.encodeWithSigner(account_kp->publicString(),
     [](std::string_view issuer_pub, std::span<const std::uint8_t> signing_input) {
-        return my_hsm.sign_ed25519(issuer_pub, signing_input);  // 64 bytes
+        // (placeholder: whatever your HSM/KMS client exposes) — 64 raw bytes
+        return my_hsm.sign_ed25519(issuer_pub, signing_input);
     });
 ```
 
@@ -206,7 +208,7 @@ your build:
 include(FetchContent)
 FetchContent_Declare(natsjwt
     GIT_REPOSITORY https://github.com/steve-weiland/nats-jwt-cpp.git
-    GIT_TAG v1.0.0)
+    GIT_TAG v1.7.0)
 FetchContent_MakeAvailable(natsjwt)
 
 target_link_libraries(my_app PRIVATE natsjwt::jwt)
