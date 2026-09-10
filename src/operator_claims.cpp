@@ -76,7 +76,7 @@ namespace {
         }
         if (!assertServerVersion.empty()) {
             int dots = 0;
-            bool ok = !assertServerVersion.empty();
+            bool ok = true;
             std::string part;
             auto checkPart = [&](const std::string& p) {
                 return !p.empty() && p.find_first_not_of("0123456789") == std::string::npos;

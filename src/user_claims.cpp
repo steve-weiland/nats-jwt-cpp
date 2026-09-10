@@ -72,15 +72,11 @@ namespace {
 
 class UserClaims::Impl {
 public:
-    // The full nats object as decoded, or Go's NewUserClaims defaults for
-    // fresh claims (no-limit subs/data/payload, empty pub/sub permissions) —
-    // nats-server treats absent limits as zero, making the user unusable.
-    // Carried through re-encode so un-ported fields survive.
-    nlohmann::json natsRaw_ = {
-        {"pub", nlohmann::json::object()},
-        {"sub", nlohmann::json::object()},
-        {"subs", -1}, {"data", -1}, {"payload", -1},
-    };
+    // The full nats object as decoded, carried through re-encode so un-ported
+    // fields survive. Every typed field (pub/sub, the -1 no-limit defaults
+    // nats-server needs — absent limits mean ZERO there) is written over it
+    // at encode, so a fresh object needs no defaults of its own.
+    nlohmann::json natsRaw_ = nlohmann::json::object();
     Permissions permissions_;
     UserLimits limits_;
     bool bearerToken_ = false;

@@ -463,10 +463,6 @@ TEST(ClaimsEdgeCaseTest, ManySigningKeys) {
     EXPECT_EQ(in, out);
 }
 
-int main(int argc, char **argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
 
 // ============================================================================
 // User permissions + limits (fix-plan "not-ported" #1+#2) — Go's User schema,
@@ -1579,6 +1575,8 @@ TEST(AuthorizationClaimsTest, TamperedTokensAreRefused) {
         auto dot = token.find('.');
         // flip a payload character between two alphabet members
         auto pos = token.find_first_of("AB", dot + 1);
+        ASSERT_NE(pos, std::string::npos) << fx;
+        ASSERT_LT(pos, token.rfind('.')) << fx;  // flip inside the PAYLOAD, not the signature
         token[pos] = token[pos] == 'A' ? 'B' : 'A';
         EXPECT_THROW((void)jwt::decode(token), jwt::Error) << fx;
     }
@@ -1946,6 +1944,8 @@ TEST(V1CompatTest, SignatureRuleFollowsThePayloadVersion) {
     auto v1tok = mintWithHeader(V1_HEADER, v1payload, *okp, true);
     auto dot = v1tok.find('.');
     auto pos = v1tok.find_first_of("AB", dot + 1);
+    ASSERT_NE(pos, std::string::npos);
+    ASSERT_LT(pos, v1tok.rfind('.'));
     v1tok[pos] = v1tok[pos] == 'A' ? 'B' : 'A';
     EXPECT_THROW((void)jwt::decode(v1tok), jwt::Error);
 }

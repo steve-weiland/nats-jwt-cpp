@@ -72,10 +72,6 @@ Examples:
 }
 
 void encodeCommand(const cmd_args& args) {
-    if (!args.positional.empty() && args.positional[0] == "encode") {
-        throw std::runtime_error("Positional JSON input not yet supported. Use stdin or specify fields.");
-    }
-
     auto type_opt = args.get("type");
     if (!type_opt) {
         throw std::runtime_error("--type required (operator, account, or user)");

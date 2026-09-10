@@ -258,6 +258,21 @@ const nlohmann::json* objectField(const nlohmann::json& j, const char* key) {
     return &j[key];
 }
 
+const char* exportTypeStr(ExportType t) {
+    switch (t) {
+        case ExportType::Stream: return "stream";
+        case ExportType::Service: return "service";
+        default: return "unknown";
+    }
+}
+
+ExportType exportTypeFrom(const std::string& s) {
+    if (s == "stream") return ExportType::Stream;
+    if (s == "service") return ExportType::Service;
+    if (s.empty()) return ExportType::Unknown;
+    throw MalformedTokenError("unknown export type \"" + s + "\"");
+}
+
 void checkIssuerKind(const std::string& issuer, std::string_view kinds, const char* claimName) {
     std::string names;
     for (char k : kinds) {

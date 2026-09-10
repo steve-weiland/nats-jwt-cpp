@@ -318,7 +318,3 @@ TEST(CmdArgsTest, ConsistencyBetweenLongAndShortEquals) {
     EXPECT_EQ(*result2.get("s"), "true");
 }
 
-int main(int argc, char **argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}

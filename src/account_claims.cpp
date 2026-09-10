@@ -136,20 +136,8 @@ namespace {
         }
     }
 
-    const char* exportTypeStr(ExportType t) {
-        switch (t) {
-            case ExportType::Stream: return "stream";
-            case ExportType::Service: return "service";
-            default: return "unknown";
-        }
-    }
-
-    ExportType exportTypeFrom(const std::string& s) {
-        if (s == "stream") return ExportType::Stream;
-        if (s == "service") return ExportType::Service;
-        if (s.empty()) return ExportType::Unknown;
-        throw MalformedTokenError("unknown export type \"" + s + "\"");  // Go: UnmarshalJSON error
-    }
+    using internal::exportTypeStr;
+    using internal::exportTypeFrom;
 
     json exportToJson(const Export& e) {
         json out = json::object();
@@ -431,9 +419,7 @@ public:
     // decoded object through re-encode keeps un-ported fields (real limits,
     // mappings, imports…) intact — resetting them to defaults would be
     // silent privilege escalation on the re-sign flow.
-    nlohmann::json natsRaw_ = {
-        {"authorization", nlohmann::json::object()},
-    };
+    nlohmann::json natsRaw_ = nlohmann::json::object();  // every typed field is written over it at encode
     AccountLimits limits_;              // Go defaults: -1 no-limits (see encode)
     Permissions defaultPermissions_;
     std::map<std::string, std::vector<WeightedMapping>> mappings_;

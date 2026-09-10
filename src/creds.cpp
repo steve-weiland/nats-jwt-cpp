@@ -1,4 +1,5 @@
 #include "jwt/creds.hpp"
+#include "jwt_utils.hpp"
 #include "jwt/jwt.hpp"
 #include <nkeys/nkeys.hpp>
 #include <chrono>
@@ -98,10 +99,7 @@ std::string issueUserJWT(const std::string& scopedSigningKeySeed,
     claims.setIssuerAccount(accountId);
     claims.setName(name.empty() ? publicUserKey : name);
     if (expirationSeconds > 0) {
-        claims.setExpires(std::chrono::duration_cast<std::chrono::seconds>(
-                              std::chrono::system_clock::now().time_since_epoch())
-                              .count() +
-                          expirationSeconds);
+        claims.setExpires(internal::getCurrentTimestamp() + expirationSeconds);
     }
     addTags(claims.tags(), tags);
     return claims.encode(scopedSigningKeySeed);

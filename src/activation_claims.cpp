@@ -9,15 +9,7 @@
 
 namespace jwt {
 
-namespace {
-    const char* exportTypeToString(ExportType t) {
-        switch (t) {
-            case ExportType::Stream: return "stream";
-            case ExportType::Service: return "service";
-            default: return "unknown";
-        }
-    }
-}
+using internal::exportTypeStr;
 
 class ActivationClaims::Impl {
 public:
@@ -99,7 +91,7 @@ std::string ActivationClaims::encodeWithSigner(const std::string& issuerPublicKe
 
     json nats_claims = impl_->natsRaw_;
     nats_claims["subject"] = impl_->importSubject_;
-    nats_claims["kind"] = exportTypeToString(impl_->importType_);
+    nats_claims["kind"] = exportTypeStr(impl_->importType_);
     if (impl_->issuerAccount_) nats_claims["issuer_account"] = *impl_->issuerAccount_;
     else nats_claims.erase("issuer_account");
     if (!impl_->tags_.empty()) nats_claims["tags"] = impl_->tags_;
@@ -118,7 +110,7 @@ void ActivationClaims::validate(ValidationResults& vr) const {
     internal::addTimeChecks(vr, impl_->expires_, impl_->notBefore_);
     if (impl_->importSubject_.empty()) vr.addError("subject cannot be empty");  // Go: Subject.Validate
     if (impl_->importType_ != ExportType::Stream && impl_->importType_ != ExportType::Service) {
-        vr.addError("invalid import type: \"" + std::string(exportTypeToString(impl_->importType_)) + "\"");
+        vr.addError("invalid import type: \"" + std::string(exportTypeStr(impl_->importType_)) + "\"");
     }
     if (impl_->issuerAccount_ && !nkeys::IsValidPublicAccountKey(*impl_->issuerAccount_)) {
         vr.addError("account_id is not an account public key");
@@ -170,10 +162,7 @@ std::unique_ptr<ActivationClaims> decodeActivationClaims(const std::string& jwt)
     claims->impl_->notBefore_ = intField(payload, "nbf", 0);
     if (const auto* a = arrayField(nats, "tags")) claims->impl_->tags_ = a->get<std::vector<std::string>>();
     claims->impl_->importSubject_ = nats.value("subject", "");
-    const std::string kind = nats.value("kind", "");
-    claims->impl_->importType_ = kind == "stream"  ? ExportType::Stream
-                                 : kind == "service" ? ExportType::Service
-                                                     : ExportType::Unknown;
+    claims->impl_->importType_ = exportTypeFrom(nats.value("kind", ""));
     if (nats.contains("issuer_account")) {
         claims->impl_->issuerAccount_ = nats["issuer_account"].get<std::string>();
     }

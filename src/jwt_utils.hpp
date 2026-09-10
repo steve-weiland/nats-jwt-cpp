@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 #include "jwt/claims.hpp"
 #include "jwt/jwt_errors.hpp"
+#include "jwt/account_claims.hpp"
 #include <nkeys/nkeys.hpp>
 
 namespace jwt::internal {
@@ -77,6 +78,12 @@ const nlohmann::json* objectField(const nlohmann::json& j, const char* key);
 void checkIssuerKind(const std::string& issuer, std::string_view kinds, const char* claimName);
 /// Full-key subject check (Go's encode uses IsValidPublic*Key, not a byte).
 void checkSubjectKind(const std::string& subject, char kind, const char* claimName);
+
+/// Go's ExportType String() / UnmarshalJSON — shared by accounts (exports,
+/// imports) and activations (import kind). An unknown STRING is a malformed
+/// token (Go: unmarshal error); absent is Unknown.
+const char* exportTypeStr(ExportType t);
+ExportType exportTypeFrom(const std::string& s);
 
 /// Wrap a typed decoder body: nlohmann exceptions become MalformedTokenError
 /// (an untrusted token must never surface anything but a jwt::Error).

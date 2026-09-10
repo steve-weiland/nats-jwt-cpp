@@ -1,5 +1,6 @@
 #include "jwt/validation.hpp"
 #include "jwt/jwt.hpp"
+#include "jwt_utils.hpp"
 #include "jwt/operator_claims.hpp"
 #include "jwt/account_claims.hpp"
 #include "jwt/user_claims.hpp"
@@ -9,15 +10,6 @@
 namespace jwt {
 
 namespace {
-    /**
-     * Get current Unix timestamp in seconds
-     */
-    std::int64_t getCurrentTime() {
-        auto now = std::chrono::system_clock::now();
-        auto since_epoch = now.time_since_epoch();
-        return std::chrono::duration_cast<std::chrono::seconds>(since_epoch).count();
-    }
-
     /**
      * Get the claim type from subject key prefix
      */
@@ -40,7 +32,7 @@ ValidationResult validateExpiration(const Claims& claims, std::int64_t clockSkew
         return ValidationResult::success();
     }
 
-    std::int64_t now = getCurrentTime();
+    std::int64_t now = internal::getCurrentTimestamp();
     std::int64_t expiresWithSkew = exp + clockSkewSeconds;
 
     if (now > expiresWithSkew) {
@@ -62,7 +54,7 @@ ValidationResult validateNotBefore(const Claims& claims, std::int64_t clockSkewS
         return ValidationResult::success();
     }
 
-    std::int64_t now = getCurrentTime();
+    std::int64_t now = internal::getCurrentTimestamp();
     if (nbf - clockSkewSeconds > now) {
         std::ostringstream oss;
         oss << "claim is not yet valid (nbf: " << nbf << ", now: " << now << ")";

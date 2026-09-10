@@ -11,11 +11,6 @@
 #include <sstream>
 #include <cstdio>
 
-TEST(JwtTest, PlaceholderTest) {
-    // Placeholder test to ensure test framework works
-    EXPECT_TRUE(true);
-}
-
 // Integration test for complete JWT encoding
 TEST(JwtEncodingTest, OperatorAccountUserChain) {
     // Create Operator and encode JWT
@@ -374,7 +369,7 @@ TEST(FormatUserConfigTest, GeneratesValidCredsFile) {
     EXPECT_NE(creds.find("NKEYs are sensitive"), std::string::npos);
 
     // Verify JWT is present in the creds file
-    EXPECT_NE(creds.find(jwt_string.substr(0, 20)), std::string::npos);
+    EXPECT_NE(creds.find(jwt_string), std::string::npos);  // the WHOLE token, not the constant header prefix
 
     // Verify seed is present
     EXPECT_NE(creds.find(seed), std::string::npos);
@@ -494,42 +489,6 @@ TEST(FormatUserConfigTest, RejectsUndecodableJwt) {
     );
 }
 
-TEST(FormatUserConfigTest, CredsFileCanBeWrittenToFile) {
-    auto account_kp = nkeys::CreateAccount();
-    auto user_kp = nkeys::CreateUser();
-
-    jwt::UserClaims claims(user_kp->publicString());
-    claims.setIssuer(account_kp->publicString());
-    claims.setName("Test User");
-
-    std::string jwt_string = claims.encode(account_kp->seedString());
-    std::string creds = jwt::formatUserConfig(jwt_string, user_kp->seedString());
-
-    // Write to temporary file
-    std::string temp_file = "/tmp/test_user.creds";
-    std::ofstream ofs(temp_file);
-    ASSERT_TRUE(ofs.is_open());
-    ofs << creds;
-    ofs.close();
-
-    // Read it back
-    std::ifstream ifs(temp_file);
-    ASSERT_TRUE(ifs.is_open());
-    std::string read_creds((std::istreambuf_iterator<char>(ifs)),
-                           std::istreambuf_iterator<char>());
-    ifs.close();
-
-    // Verify content matches
-    EXPECT_EQ(read_creds, creds);
-
-    // Clean up
-    std::remove(temp_file.c_str());
-}
-
-int main(int argc, char **argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
 
 
 // ============================================================================
