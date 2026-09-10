@@ -8,8 +8,9 @@ code in this repository.
 nats-jwt-cpp is a C++20 port of the Go [NATS JWT](https://github.com/nats-io/jwt)
 library (v2): operator/account/user claims, Ed25519-signed JWTs via
 [nkeys-cpp](https://github.com/steve-weiland/nkeys-cpp), timing/chain
-validation, and `.creds` generation. It is a deliberate PARTIAL port — see the
-README's Scope section for what is and isn't included. Wire compatibility with
+validation, and `.creds` generation. It is a complete port of the Go surface
+(the only omission: the account trace/cluster_traffic fields, carried through
+re-encode untouched but not typed). Wire compatibility with
 the Go implementation is the defining requirement and is continuously measured
 (see Gates).
 
@@ -188,8 +189,7 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
 
 ## Known gaps
 
-The port is complete but for the account trace/cluster_traffic fields
-(README Scope). Encrypted callout (§7a): the request body is a sealed box
+The port is complete but for the account trace/cluster_traffic fields. Encrypted callout (§7a): the request body is a sealed box
 ("xkv1") when the account has an xkey; the server's curve key is in the
 `Nats-Server-Xkey` header AND the signed `server_id.xkey` —
 `decodeSealedAuthorizationRequest` requires them to agree. The e2e's callout
