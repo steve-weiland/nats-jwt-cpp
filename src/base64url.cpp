@@ -18,7 +18,10 @@ namespace {
         for (std::uint8_t i = 0; i < 64; ++i) {
             lookup[static_cast<std::uint8_t>(alphabet[i])] = i;
         }
-        lookup[static_cast<std::uint8_t>('=')] = 0;  // Padding (treated as 0)
+        // No '=': Go's base64.RawURLEncoding refuses padding anywhere, and a
+        // token string must have exactly one valid spelling (string-keyed
+        // caches, dedup, revocation by token text) — measured: `token=` used
+        // to decode and verify here while Go said "illegal base64 data".
 
         return lookup;
     }
@@ -70,15 +73,6 @@ std::string base64url_encode(std::span<const std::uint8_t> data) {
 }
 
 std::vector<std::uint8_t> base64url_decode(std::string_view input) {
-    if (input.empty()) {
-        return {};
-    }
-
-    // Remove padding if present (though Base64 URL should not have it)
-    while (!input.empty() && input.back() == '=') {
-        input.remove_suffix(1);
-    }
-
     if (input.empty()) {
         return {};
     }

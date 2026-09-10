@@ -2210,3 +2210,53 @@ TEST(ActivationDecodeTest, GoMintableAdvisoryFailuresDecodeAndReport) {
     pub.setImportType(jwt::ExportType::Service);
     EXPECT_THROW((void)pub.encode(akp->seedString()), jwt::InvalidClaimsError);
 }
+
+// ============================================================================
+// Review 2026-09-09, R7–R9: canonical base64url (Go's RawURLEncoding refuses
+// '='), verify() must follow the same signature rule as decode (v1 tokens
+// sign the payload chunk only), and Go's SetScoped(false) resets ONLY Limits.
+// ============================================================================
+
+TEST(CanonicalEncodingTest, PaddingIsRefusedLikeGo) {
+    auto okp = nkeys::CreateOperator();
+    jwt::OperatorClaims oc(okp->publicString());
+    auto tok = oc.encode(okp->seedString());
+    EXPECT_NO_THROW((void)jwt::decode(tok));
+    // measured: Go's base64.RawURLEncoding → "illegal base64 data"; a token
+    // string with a trailing '=' must not be a second valid spelling
+    expectJwtError("trailing '='", [&] { (void)jwt::decode(tok + "="); });
+    expectJwtError("'=' in header", [&] { auto t = tok; t.insert(t.find('.'), "="); (void)jwt::decode(t); });
+    EXPECT_FALSE(jwt::verify(tok + "="));
+    // the raw decoder refuses it too, as a jwt::Error
+    EXPECT_THROW((void)jwt::internal::base64url_decode("QQ=="), jwt::Error);
+    EXPECT_THROW((void)jwt::internal::base64url_decode("Q=Q"), jwt::Error);
+    EXPECT_THROW((void)jwt::internal::base64url_decode("Q!"), jwt::Error);
+}
+
+TEST(CanonicalEncodingTest, VerifyFollowsThePayloadVersionLikeDecode) {
+    auto okp = nkeys::CreateOperator();
+    const std::string v1payload = R"({"iat":1700000000,"iss":")" + okp->publicString() + R"(","jti":"x","sub":")" +
+        okp->publicString() + R"(","type":"operator","nats":{}})";
+    auto v1 = mintWithHeader(V1_HEADER, v1payload, *okp, true);
+    EXPECT_NO_THROW((void)jwt::decode(v1));
+    EXPECT_TRUE(jwt::verify(v1));                      // was false: verify() hard-coded the v2 rule
+    EXPECT_TRUE(jwt::validate(v1, jwt::ValidationOptions{}).valid);
+    EXPECT_FALSE(jwt::verify(mintWithHeader(V1_HEADER, v1payload, *okp, false)));
+    EXPECT_FALSE(jwt::verify(readFixture2("v1-user.jwt") + "x"));
+    EXPECT_TRUE(jwt::verify(readFixture2("v1-user.jwt")));
+}
+
+TEST(CanonicalEncodingTest, UnscopingResetsOnlyLimitsLikeGo) {
+    // Go: SetScoped(false) → Limits = NoLimit; Permissions and the flags stay
+    jwt::UserClaims u(nkeys::CreateUser()->publicString());
+    u.permissions().pub.allow = {"a"};
+    u.setBearerToken(true);
+    u.limits().subs = 5;
+    u.setScoped(false);
+    EXPECT_EQ(u.permissions().pub.allow, (std::vector<std::string>{"a"}));
+    EXPECT_TRUE(u.isBearerToken());
+    EXPECT_EQ(u.limits().subs, -1);
+    // SetScoped(true) still zeroes everything (measured group 5c)
+    u.setScoped(true);
+    EXPECT_TRUE(u.hasEmptyPermissions());
+}

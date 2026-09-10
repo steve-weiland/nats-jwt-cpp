@@ -179,18 +179,18 @@ const std::vector<std::string>& UserClaims::allowedConnectionTypes() const {
 }
 
 void UserClaims::setScoped(bool scoped) {
-    // Go's SetScoped: scoped users carry NO permissions or limits of their
-    // own (all zero — omitted on the wire); the server applies the scope's
-    // template. Unscoping restores the -1 no-limit defaults. The connection
-    // flags are part of UserPermissionLimits too, so they reset either way.
-    impl_->bearerToken_ = false;
-    impl_->proxyRequired_ = false;
-    impl_->allowedConnectionTypes_.clear();
+    // Go's SetScoped(true): scoped users carry NO permissions or limits of
+    // their own (the whole UserPermissionLimits zeroed — flags included; all
+    // omitted on the wire); the server applies the scope's template.
+    // SetScoped(false) resets ONLY Limits to the -1 no-limit defaults and
+    // keeps permissions and flags (Go user_claims.go:79-88).
     if (scoped) {
         impl_->permissions_ = Permissions{};
         impl_->limits_ = UserLimits{0, 0, 0, {}, {}, ""};
+        impl_->bearerToken_ = false;
+        impl_->proxyRequired_ = false;
+        impl_->allowedConnectionTypes_.clear();
     } else {
-        impl_->permissions_ = Permissions{};
         impl_->limits_ = UserLimits{};
     }
 }

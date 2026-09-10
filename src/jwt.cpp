@@ -55,26 +55,14 @@ std::unique_ptr<Claims> decode(const std::string& jwt) {
 }
 
 bool verify(const std::string& jwt) {
-    using namespace internal;
-    using json = nlohmann::json;
-
+    // The same authenticated envelope decode() uses — header validity, the
+    // payload-derived version and its signature rule (v1 signs the payload
+    // chunk only), verified against the embedded issuer. A separate
+    // hard-coded v2 check here used to reject every v1 token decode() took.
     try {
-        auto parts = parseJwt(jwt);
-
-        auto payload_bytes = base64url_decode(parts.payload_b64);
-        std::string payload_json(payload_bytes.begin(), payload_bytes.end());
-        auto payload = json::parse(payload_json);
-
-        // Extract issuer (the public key that signed this JWT)
-        if (!payload.contains("iss")) {
-            return false;
-        }
-        std::string issuer = payload["iss"].get<std::string>();
-
-        return verifySignature(issuer, parts.signing_input, parts.signature_b64);
-
+        (void)internal::decodeEnvelope(jwt);
+        return true;
     } catch (...) {
-        // Any exception means verification failed
         return false;
     }
 }

@@ -35,8 +35,10 @@ struct ValidationOptions {
     bool checkNotBefore = false;        // Check if JWT is not yet valid (nbf claim)
     std::int64_t clockSkewSeconds = 0;  // Allow clock skew tolerance
 
-    // Signature validation
-    bool checkSignature = true;         // Verify signature
+    // Signature validation. NOTE: decode() is always authenticated, so this
+    // only controls the redundant standalone verify() in validate(jwt);
+    // it cannot make an unverified token pass.
+    bool checkSignature = true;
 
     // Chain validation
     bool checkIssuerChain = false;      // Verify issuer chain (parent signed child)
