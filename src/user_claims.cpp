@@ -220,10 +220,8 @@ std::string UserClaims::encodeWithSigner(const std::string& issuerPublicKey,
     // Go's doEncode: the issuer IS the signing key — derived, never taken on
     // trust from a setter (iss can then never disagree with the signature) —
     // and iat is stamped fresh at every encode.
+    internal::checkIssuerKind(issuerPublicKey, "A", "User");
     impl_->issuer_ = issuerPublicKey;
-    if (!nkeys::IsValidPublicAccountKey(impl_->issuer_)) {
-        throw InvalidClaimsError("User JWTs must be signed by an account key");
-    }
     impl_->issuedAt_ = getCurrentTimestamp();
 
     validate();
@@ -327,12 +325,8 @@ void UserClaims::checkStructure() const {
     if (impl_->issuer_.empty()) {
         throw InvalidClaimsError("User issuer cannot be empty (must be signed by Account)");
     }
-    if (impl_->subject_[0] != 'U') {
-        throw InvalidClaimsError("User subject must start with 'U'");
-    }
-    if (impl_->issuer_[0] != 'A') {
-        throw InvalidClaimsError("User issuer must be an Account (start with 'A')");
-    }
+    internal::checkSubjectKind(impl_->subject_, 'U', "User");
+    internal::checkIssuerKind(impl_->issuer_, "A", "User");
 }
 
 std::unique_ptr<UserClaims> decodeUserClaims(const std::string& jwt) {
@@ -344,6 +338,7 @@ std::unique_ptr<UserClaims> decodeUserClaims(const std::string& jwt) {
     // signature rule, v1 → v2 migration — shared in decodeEnvelope.
     auto env = decodeEnvelope(jwt);
     const json& payload = env.payload;
+    return guardJson([&]() -> std::unique_ptr<UserClaims> {
     auto nats = payload["nats"];
     if (!nats.contains("type") || nats["type"] != "user") {
         throw InvalidClaimsError(
@@ -354,7 +349,7 @@ std::unique_ptr<UserClaims> decodeUserClaims(const std::string& jwt) {
 
     std::string subject = payload.at("sub").get<std::string>();
     std::string issuer = payload.at("iss").get<std::string>();
-    std::int64_t iat = payload.at("iat").get<std::int64_t>();
+    std::int64_t iat = intField(payload, "iat", 0);  // Go: omitempty → 0
 
     // Create UserClaims object
     auto claims = std::make_unique<UserClaims>(subject);
@@ -362,16 +357,15 @@ std::unique_ptr<UserClaims> decodeUserClaims(const std::string& jwt) {
 
     // Typed permission/limit fields (fix-plan #1+#2)
     auto& perms = claims->impl_->permissions_;
-    if (nats.contains("pub")) perms.pub = internal::permissionFromJson(nats["pub"]);
-    if (nats.contains("sub")) perms.sub = internal::permissionFromJson(nats["sub"]);
-    if (nats.contains("resp") && nats["resp"].is_object()) {
-        perms.resp = ResponsePermission{nats["resp"].value("max", 0),
-                                        nats["resp"].value("ttl", std::int64_t{0})};
+    if (const auto* o = objectField(nats, "pub")) perms.pub = internal::permissionFromJson(*o);
+    if (const auto* o = objectField(nats, "sub")) perms.sub = internal::permissionFromJson(*o);
+    if (const auto* o = objectField(nats, "resp")) {
+        perms.resp = ResponsePermission{static_cast<int>(intField(*o, "max", 0)), intField(*o, "ttl", 0)};
     }
     auto& lims = claims->impl_->limits_;
-    lims.subs = nats.value("subs", std::int64_t{0});
-    lims.data = nats.value("data", std::int64_t{0});
-    lims.payload = nats.value("payload", std::int64_t{0});
+    lims.subs = intField(nats, "subs", 0);
+    lims.data = intField(nats, "data", 0);
+    lims.payload = intField(nats, "payload", 0);
     if (nats.contains("src")) {
         // Go's CIDRList accepts a JSON array or a comma-separated string
         if (nats["src"].is_array()) {
@@ -389,19 +383,18 @@ std::unique_ptr<UserClaims> decodeUserClaims(const std::string& jwt) {
                 if (next == std::string::npos) break;
                 pos = next + 1;
             }
+        } else {
+            throw MalformedTokenError("field 'src' must be an array or a string");
         }
     }
-    if (nats.contains("times") && nats["times"].is_array()) {
-        for (const auto& tr : nats["times"]) {
-            lims.times.push_back({tr.value("start", ""), tr.value("end", "")});
-        }
+    if (const auto* a = arrayField(nats, "times")) {
+        for (const auto& tr : *a) lims.times.push_back({tr.value("start", ""), tr.value("end", "")});
     }
     lims.locale = nats.value("times_location", "");
     claims->impl_->bearerToken_ = nats.value("bearer_token", false);
     claims->impl_->proxyRequired_ = nats.value("proxy_required", false);
-    if (nats.contains("allowed_connection_types") && nats["allowed_connection_types"].is_array()) {
-        claims->impl_->allowedConnectionTypes_ =
-            nats["allowed_connection_types"].get<std::vector<std::string>>();
+    if (const auto* a = arrayField(nats, "allowed_connection_types")) {
+        claims->impl_->allowedConnectionTypes_ = a->get<std::vector<std::string>>();
     }
 
     // Populate required fields (direct access via friend declaration)
@@ -413,13 +406,10 @@ std::unique_ptr<UserClaims> decodeUserClaims(const std::string& jwt) {
         claims->setName(payload["name"].get<std::string>());
     }
 
-    if (payload.contains("exp")) {
-        claims->setExpires(payload["exp"].get<std::int64_t>());
-    }
+    claims->setExpires(intField(payload, "exp", 0));
     claims->impl_->audience_ = payload.value("aud", "");
-    claims->impl_->notBefore_ = payload.value("nbf", std::int64_t{0});
-    if (nats.contains("tags") && nats["tags"].is_array())
-        claims->impl_->tags_ = nats["tags"].get<std::vector<std::string>>();
+    claims->impl_->notBefore_ = intField(payload, "nbf", 0);
+    if (const auto* a = arrayField(nats, "tags")) claims->impl_->tags_ = a->get<std::vector<std::string>>();
 
     // Extract issuer_account if present
     if (nats.contains("issuer_account")) {
@@ -428,8 +418,8 @@ std::unique_ptr<UserClaims> decodeUserClaims(const std::string& jwt) {
 
     // Validate the decoded claims
     claims->checkStructure();
-
     return claims;
+    });
 }
 
 std::string formatUserConfig(const std::string& jwt, const std::string& seed) {

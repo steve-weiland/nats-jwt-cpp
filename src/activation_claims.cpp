@@ -81,11 +81,8 @@ std::string ActivationClaims::encodeWithSigner(const std::string& issuerPublicKe
 
     // Go's doEncode: issuer derived from the seed; activations may be issued
     // by accounts or operators (ExpectedPrefixes).
+    internal::checkIssuerKind(issuerPublicKey, "AO", "Activation");
     impl_->issuer_ = issuerPublicKey;
-    if (!nkeys::IsValidPublicAccountKey(impl_->issuer_) &&
-        !nkeys::IsValidPublicOperatorKey(impl_->issuer_)) {
-        throw InvalidClaimsError("Activation JWTs must be signed by an account or operator key");
-    }
     impl_->issuedAt_ = getCurrentTimestamp();
 
     validate();
@@ -149,6 +146,7 @@ void ActivationClaims::checkStructure() const {
     if (impl_->importType_ != ExportType::Stream && impl_->importType_ != ExportType::Service) {
         throw InvalidClaimsError("Activation import type must be stream or service");
     }
+    internal::checkIssuerKind(impl_->issuer_, "AO", "Activation");
 }
 
 std::unique_ptr<ActivationClaims> decodeActivationClaims(const std::string& jwt) {
@@ -159,6 +157,7 @@ std::unique_ptr<ActivationClaims> decodeActivationClaims(const std::string& jwt)
     // signature rule, v1 → v2 migration — shared in decodeEnvelope.
     auto env = decodeEnvelope(jwt);
     const json& payload = env.payload;
+    return guardJson([&]() -> std::unique_ptr<ActivationClaims> {
     auto nats = payload["nats"];
     if (!nats.contains("type") || nats["type"] != "activation") {
         throw InvalidClaimsError("JWT type mismatch: expected 'activation'");
@@ -170,13 +169,12 @@ std::unique_ptr<ActivationClaims> decodeActivationClaims(const std::string& jwt)
     auto claims = std::make_unique<ActivationClaims>(subject);
     claims->impl_->natsRaw_ = nats;
     claims->impl_->issuer_ = issuer;
-    claims->impl_->issuedAt_ = payload.at("iat").get<std::int64_t>();
+    claims->impl_->issuedAt_ = intField(payload, "iat", 0);
     if (payload.contains("name")) claims->setName(payload["name"].get<std::string>());
-    if (payload.contains("exp")) claims->setExpires(payload["exp"].get<std::int64_t>());
+    claims->setExpires(intField(payload, "exp", 0));
     claims->impl_->audience_ = payload.value("aud", "");
-    claims->impl_->notBefore_ = payload.value("nbf", std::int64_t{0});
-    if (nats.contains("tags") && nats["tags"].is_array())
-        claims->impl_->tags_ = nats["tags"].get<std::vector<std::string>>();
+    claims->impl_->notBefore_ = intField(payload, "nbf", 0);
+    if (const auto* a = arrayField(nats, "tags")) claims->impl_->tags_ = a->get<std::vector<std::string>>();
     claims->impl_->importSubject_ = nats.value("subject", "");
     const std::string kind = nats.value("kind", "");
     claims->impl_->importType_ = kind == "stream"  ? ExportType::Stream
@@ -187,6 +185,7 @@ std::unique_ptr<ActivationClaims> decodeActivationClaims(const std::string& jwt)
     }
     claims->checkStructure();
     return claims;
+    });
 }
 
 }

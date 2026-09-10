@@ -30,11 +30,16 @@ std::unique_ptr<Claims> decode(const std::string& jwt) {
     // Go's identifier: a top-level type marks the v1 layout, else nats.type.
     // Unknown types decode as GenericClaims (Go: loadClaims' default);
     // cluster/server are refused by Go and by us.
+    // Go's identifier: type fields are strings or an unmarshal error; an
+    // EMPTY top-level type falls through to nats.type (Go: Kind())
     std::string type;
-    if (payload.contains("type") && payload["type"].is_string()) {
+    if (payload.contains("type")) {
+        if (!payload["type"].is_string()) throw MalformedTokenError("JWT 'type' is not a string");
         type = payload["type"].get<std::string>();
-    } else if (payload.contains("nats") && payload["nats"].is_object() &&
-               payload["nats"].contains("type") && payload["nats"]["type"].is_string()) {
+    }
+    if (type.empty() && payload.contains("nats") && payload["nats"].is_object() &&
+        payload["nats"].contains("type")) {
+        if (!payload["nats"]["type"].is_string()) throw MalformedTokenError("JWT nats.type is not a string");
         type = payload["nats"]["type"].get<std::string>();
     }
 

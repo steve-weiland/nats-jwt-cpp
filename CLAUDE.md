@@ -41,7 +41,23 @@ the Go implementation is the defining requirement and is continuously measured
 - **Throw only `jwt::Error`-derived types** (`jwt_errors.hpp`):
   MalformedTokenError / InvalidClaimsError / SignatureError, each also
   deriving its historical std base. nkeys::Error propagates for key material.
-  Translate nlohmann exceptions at parse sites — they must not leak.
+  nlohmann exceptions must not leak: every typed decoder body runs inside
+  `internal::guardJson` (json exception → MalformedTokenError), and fields
+  are read with the strict readers in `jwt_utils.hpp` (`intField`,
+  `uintField`, `arrayField`, `objectField`) — Go's encoding/json refuses a
+  wrong-typed or out-of-range value, nlohmann silently converts a float and
+  wraps an integer (measured: `nats.version` 2^32+2 read as 2). Header
+  shape errors are caught BEFORE the signature check (unauthenticated bytes).
+  The review that found the leaks: a header `[]` terminated a caller that
+  honored the documented `catch (const jwt::Error&)` contract.
+- **Go's ExpectedPrefixes hold at decode, for every type.**
+  `internal::checkIssuerKind` runs in each `checkStructure` (decode) AND
+  `encodeWithSigner`: operator←O, account←O|A, user←A, activation←A|O,
+  authorization_request←N, authorization_response←A; subjects are checked
+  as FULL keys (`checkSubjectKind`), not by first byte. Measured before the
+  fix: an operator signed by an account key and a callout request signed
+  by a USER key decoded, and the operator even passed strict chain
+  validation as a root.
 - **Claims must be server-usable and re-sign-safe.** Fresh account/user
   claims emit Go's default no-limit fields — nats-server treats ABSENT limits
   as ZERO (measured: "maximum account active connections exceeded" from a

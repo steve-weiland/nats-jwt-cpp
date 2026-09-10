@@ -5,6 +5,7 @@
 #include "jwt_utils.hpp"
 #include <nkeys/nkeys.hpp>
 #include <nlohmann/json.hpp>
+#include <limits>
 
 namespace jwt {
 
@@ -44,7 +45,7 @@ namespace {
         s.id = j.value("id", "");
         s.version = j.value("version", "");
         s.cluster = j.value("cluster", "");
-        if (j.contains("tags") && j["tags"].is_array()) s.tags = j["tags"].get<std::vector<std::string>>();
+        if (const auto* a = internal::arrayField(j, "tags")) s.tags = a->get<std::vector<std::string>>();
         s.xkey = j.value("xkey", "");
         return s;
     }
@@ -66,10 +67,10 @@ namespace {
     ClientInformation clientInfoFromJson(const json& j) {
         ClientInformation c;
         c.host = j.value("host", "");
-        c.id = j.value("id", std::uint64_t{0});
+        c.id = internal::uintField(j, "id", 0, std::numeric_limits<std::uint64_t>::max());
         c.user = j.value("user", "");
         c.name = j.value("name", "");
-        if (j.contains("tags") && j["tags"].is_array()) c.tags = j["tags"].get<std::vector<std::string>>();
+        if (const auto* a = internal::arrayField(j, "tags")) c.tags = a->get<std::vector<std::string>>();
         c.nameTag = j.value("name_tag", "");
         c.kind = j.value("kind", "");
         c.type = j.value("type", "");
@@ -103,7 +104,7 @@ namespace {
         c.name = j.value("name", "");
         c.lang = j.value("lang", "");
         c.version = j.value("version", "");
-        c.protocol = j.value("protocol", 0);
+        c.protocol = static_cast<int>(internal::uintField(j, "protocol", 0, std::numeric_limits<int>::max()));
         return c;
     }
 
@@ -119,9 +120,9 @@ namespace {
         ClientTLS t;
         t.version = j.value("version", "");
         t.cipher = j.value("cipher", "");
-        if (j.contains("certs") && j["certs"].is_array()) t.certs = j["certs"].get<std::vector<std::string>>();
-        if (j.contains("verified_chains") && j["verified_chains"].is_array())
-            t.verifiedChains = j["verified_chains"].get<std::vector<std::vector<std::string>>>();
+        if (const auto* a = internal::arrayField(j, "certs")) t.certs = a->get<std::vector<std::string>>();
+        if (const auto* a = internal::arrayField(j, "verified_chains"))
+            t.verifiedChains = a->get<std::vector<std::vector<std::string>>>();
         return t;
     }
 
@@ -194,6 +195,9 @@ void AuthorizationRequestClaims::checkStructure() const {
     if (impl_->subject_.empty()) {
         throw InvalidClaimsError("Authorization request subject cannot be empty");
     }
+    // Go's ExpectedPrefixes for requests: servers only — enforced at DECODE
+    // too (Go: Decode), not just at encode
+    internal::checkIssuerKind(impl_->issuer_, "N", "Authorization request");
 }
 
 void AuthorizationRequestClaims::validate(ValidationResults& vr) const {
@@ -221,11 +225,8 @@ std::string AuthorizationRequestClaims::encode(const std::string& seed) const {
 std::string AuthorizationRequestClaims::encodeWithSigner(const std::string& issuerPublicKey,
                                                          const SignFn& sign) const {
     using namespace internal;
-    // Go's ExpectedPrefixes for requests: servers only.
+    internal::checkIssuerKind(issuerPublicKey, "N", "Authorization request");
     impl_->issuer_ = issuerPublicKey;
-    if (!nkeys::IsValidPublicServerKey(impl_->issuer_)) {
-        throw InvalidClaimsError("Authorization request JWTs must be signed by a server key");
-    }
     impl_->issuedAt_ = getCurrentTimestamp();
     validate();
 
@@ -248,28 +249,27 @@ std::string AuthorizationRequestClaims::encodeWithSigner(const std::string& issu
 
 std::unique_ptr<AuthorizationRequestClaims> decodeAuthorizationRequestClaims(const std::string& jwt) {
     json payload = decodePayloadOfType(jwt, "authorization_request");
+    return internal::guardJson([&] {
     const auto& nats = payload["nats"];
     auto claims = std::make_unique<AuthorizationRequestClaims>(payload["sub"].get<std::string>());
     auto& d = *claims->impl_;
     d.natsRaw_ = nats;
     d.issuer_ = payload["iss"].get<std::string>();
-    d.issuedAt_ = payload["iat"].get<std::int64_t>();
+    d.issuedAt_ = internal::intField(payload, "iat", 0);
     if (payload.contains("name")) d.name_ = payload["name"].get<std::string>();
-    if (payload.contains("exp")) d.expires_ = payload["exp"].get<std::int64_t>();
+    d.expires_ = internal::intField(payload, "exp", 0);
     d.audience_ = payload.value("aud", "");
-    d.notBefore_ = payload.value("nbf", std::int64_t{0});
-    if (nats.contains("tags") && nats["tags"].is_array()) d.tags_ = nats["tags"].get<std::vector<std::string>>();
-    if (nats.contains("server_id") && nats["server_id"].is_object()) d.server_ = serverIdFromJson(nats["server_id"]);
+    d.notBefore_ = internal::intField(payload, "nbf", 0);
+    if (const auto* a = internal::arrayField(nats, "tags")) d.tags_ = a->get<std::vector<std::string>>();
+    if (const auto* o = internal::objectField(nats, "server_id")) d.server_ = serverIdFromJson(*o);
     d.userNkey_ = nats.value("user_nkey", "");
-    if (nats.contains("client_info") && nats["client_info"].is_object())
-        d.client_ = clientInfoFromJson(nats["client_info"]);
-    if (nats.contains("connect_opts") && nats["connect_opts"].is_object())
-        d.connect_ = connectOptsFromJson(nats["connect_opts"]);
-    if (nats.contains("client_tls") && nats["client_tls"].is_object())
-        d.tls_ = clientTlsFromJson(nats["client_tls"]);
+    if (const auto* o = internal::objectField(nats, "client_info")) d.client_ = clientInfoFromJson(*o);
+    if (const auto* o = internal::objectField(nats, "connect_opts")) d.connect_ = connectOptsFromJson(*o);
+    if (const auto* o = internal::objectField(nats, "client_tls")) d.tls_ = clientTlsFromJson(*o);
     d.requestNonce_ = nats.value("request_nonce", "");
     claims->checkStructure();
     return claims;
+    });
 }
 
 // ───────────────────────── AuthorizationResponseClaims ─────────────────────────
@@ -320,6 +320,7 @@ void AuthorizationResponseClaims::checkStructure() const {
     if (impl_->subject_.empty()) {
         throw InvalidClaimsError("Authorization response subject cannot be empty");
     }
+    internal::checkIssuerKind(impl_->issuer_, "A", "Authorization response");
 }
 
 void AuthorizationResponseClaims::validate(ValidationResults& vr) const {
@@ -357,11 +358,8 @@ std::string AuthorizationResponseClaims::encode(const std::string& seed) const {
 std::string AuthorizationResponseClaims::encodeWithSigner(const std::string& issuerPublicKey,
                                                           const SignFn& sign) const {
     using namespace internal;
-    // Go's ExpectedPrefixes for responses: accounts only.
+    internal::checkIssuerKind(issuerPublicKey, "A", "Authorization response");
     impl_->issuer_ = issuerPublicKey;
-    if (!nkeys::IsValidPublicAccountKey(impl_->issuer_)) {
-        throw InvalidClaimsError("Authorization response JWTs must be signed by an account key");
-    }
     impl_->issuedAt_ = getCurrentTimestamp();
     validate();
 
@@ -382,22 +380,24 @@ std::string AuthorizationResponseClaims::encodeWithSigner(const std::string& iss
 
 std::unique_ptr<AuthorizationResponseClaims> decodeAuthorizationResponseClaims(const std::string& jwt) {
     json payload = decodePayloadOfType(jwt, "authorization_response");
+    return internal::guardJson([&] {
     const auto& nats = payload["nats"];
     auto claims = std::make_unique<AuthorizationResponseClaims>(payload["sub"].get<std::string>());
     auto& d = *claims->impl_;
     d.natsRaw_ = nats;
     d.issuer_ = payload["iss"].get<std::string>();
-    d.issuedAt_ = payload["iat"].get<std::int64_t>();
+    d.issuedAt_ = internal::intField(payload, "iat", 0);
     if (payload.contains("name")) d.name_ = payload["name"].get<std::string>();
-    if (payload.contains("exp")) d.expires_ = payload["exp"].get<std::int64_t>();
+    d.expires_ = internal::intField(payload, "exp", 0);
     d.audience_ = payload.value("aud", "");
-    d.notBefore_ = payload.value("nbf", std::int64_t{0});
-    if (nats.contains("tags") && nats["tags"].is_array()) d.tags_ = nats["tags"].get<std::vector<std::string>>();
+    d.notBefore_ = internal::intField(payload, "nbf", 0);
+    if (const auto* a = internal::arrayField(nats, "tags")) d.tags_ = a->get<std::vector<std::string>>();
     d.jwt_ = nats.value("jwt", "");
     d.error_ = nats.value("error", "");
     if (nats.contains("issuer_account")) d.issuerAccount_ = nats["issuer_account"].get<std::string>();
     claims->checkStructure();
     return claims;
+    });
 }
 
 }

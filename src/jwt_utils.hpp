@@ -7,6 +7,7 @@
 #include <span>
 #include <nlohmann/json.hpp>
 #include "jwt/claims.hpp"
+#include "jwt/jwt_errors.hpp"
 #include <nkeys/nkeys.hpp>
 
 namespace jwt::internal {
@@ -55,8 +56,37 @@ struct JwtParts {
 };
 
 /// Go's Header.Valid: typ must be "JWT" case-insensitively; alg, lower-cased,
-/// must be "ed25519" (v1) or "ed25519-nkey" (v2). Throws InvalidClaimsError.
-void validateHeader(const std::string& headerJson);
+/// must be "ed25519" (v1) or "ed25519-nkey" (v2). A header that is not an
+/// object of strings is MalformedTokenError (Go: unmarshal error); a wrong
+/// typ/alg is InvalidClaimsError. Returns the parsed header.
+nlohmann::json validateHeader(const std::string& headerJson);
+
+// ---- strict field readers (Go's encoding/json refuses wrong-typed and
+// out-of-range values; nlohmann silently converts floats and wraps
+// integers) — all throw MalformedTokenError. Absent → the default.
+std::int64_t intField(const nlohmann::json& j, const char* key, std::int64_t def);
+std::int64_t intValue(const nlohmann::json& v, const char* what);
+std::uint64_t uintField(const nlohmann::json& j, const char* key, std::uint64_t def, std::uint64_t max);
+/// nullptr when absent; throws when present with the wrong type.
+const nlohmann::json* arrayField(const nlohmann::json& j, const char* key);
+const nlohmann::json* objectField(const nlohmann::json& j, const char* key);
+
+/// Go's Decode enforces ExpectedPrefixes: the issuer must be a valid public
+/// key of one of `kinds` ('O' operator, 'A' account, 'U' user, 'N' server).
+/// Throws InvalidClaimsError naming the claim type.
+void checkIssuerKind(const std::string& issuer, std::string_view kinds, const char* claimName);
+/// Full-key subject check (Go's encode uses IsValidPublic*Key, not a byte).
+void checkSubjectKind(const std::string& subject, char kind, const char* claimName);
+
+/// Wrap a typed decoder body: nlohmann exceptions become MalformedTokenError
+/// (an untrusted token must never surface anything but a jwt::Error).
+template <class F> auto guardJson(F&& body) -> decltype(body()) {
+    try {
+        return body();
+    } catch (const nlohmann::json::exception& e) {
+        throw MalformedTokenError(std::string("Invalid JWT payload: ") + e.what());
+    }
+}
 
 /// The authenticated, version-migrated payload of a token (Go's Decode up to
 /// loadClaims + signature verification):

@@ -116,8 +116,8 @@ std::unique_ptr<GenericClaims> decodeGeneric(const std::string& jwt) {
     auto parts = parseJwt(jwt);
     auto header_bytes = base64url_decode(parts.header_b64);
     const std::string headerJson(header_bytes.begin(), header_bytes.end());
-    validateHeader(headerJson);
-    std::string alg = json::parse(headerJson).value("alg", "");
+    const json header = validateHeader(headerJson);
+    std::string alg = header.value("alg", "");
     for (auto& c : alg) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
     auto payload_bytes = base64url_decode(parts.payload_b64);
@@ -127,27 +127,27 @@ std::unique_ptr<GenericClaims> decodeGeneric(const std::string& jwt) {
     } catch (const json::exception& e) {
         throw MalformedTokenError(std::string("Invalid JWT payload JSON: ") + e.what());
     }
-    std::string issuer, subject;
-    try {
-        issuer = payload.at("iss").get<std::string>();
-        subject = payload.at("sub").get<std::string>();
-    } catch (const json::exception& e) {
-        throw MalformedTokenError(std::string("Invalid JWT payload: ") + e.what());
+    if (!payload.is_object() || !payload.contains("iss") || !payload["iss"].is_string() ||
+        !payload.contains("sub") || !payload["sub"].is_string()) {
+        throw MalformedTokenError("JWT payload lacks string 'iss'/'sub'");
     }
+    const std::string issuer = payload["iss"].get<std::string>();
+    const std::string subject = payload["sub"].get<std::string>();
     // Go's DecodeGeneric: the signature rule follows the HEADER alg
     const bool v1 = alg == "ed25519";
     if (!verifySignature(issuer, v1 ? parts.payload_b64 : parts.signing_input, parts.signature_b64)) {
         throw SignatureError(v1 ? "claim failed V1 signature verification"
                                 : "claim failed V2 signature verification");
     }
+    return guardJson([&] {
     auto claims = std::make_unique<GenericClaims>(subject);
     auto& d = *claims->impl_;
     d.issuer_ = issuer;
-    d.issuedAt_ = payload.value("iat", std::int64_t{0});
+    d.issuedAt_ = intField(payload, "iat", 0);
     if (payload.contains("name")) d.name_ = payload["name"].get<std::string>();
-    d.expires_ = payload.value("exp", std::int64_t{0});
+    d.expires_ = intField(payload, "exp", 0);
     d.audience_ = payload.value("aud", "");
-    d.notBefore_ = payload.value("nbf", std::int64_t{0});
+    d.notBefore_ = intField(payload, "nbf", 0);
     d.data_ = payload.contains("nats") && payload["nats"].is_object() ? payload["nats"] : json::object();
     if (v1) {
         // Go copies the v1 top-level type and tags into the data map
@@ -158,6 +158,7 @@ std::unique_ptr<GenericClaims> decodeGeneric(const std::string& jwt) {
     }
     claims->checkStructure();
     return claims;
+    });
 }
 
 }

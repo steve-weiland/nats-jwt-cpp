@@ -184,10 +184,8 @@ std::string OperatorClaims::encodeWithSigner(const std::string& issuerPublicKey,
     // Go's doEncode: the issuer IS the signing key — derived, never taken on
     // trust from a setter (iss can then never disagree with the signature) —
     // and iat is stamped fresh at every encode.
+    internal::checkIssuerKind(issuerPublicKey, "O", "Operator");
     impl_->issuer_ = issuerPublicKey;
-    if (!nkeys::IsValidPublicOperatorKey(impl_->issuer_)) {
-        throw InvalidClaimsError("Operator JWTs must be signed by an operator key");
-    }
     impl_->issuedAt_ = getCurrentTimestamp();
 
     validate();
@@ -268,9 +266,9 @@ void OperatorClaims::checkStructure() const {
     if (impl_->issuer_.empty()) {
         throw InvalidClaimsError("Operator issuer cannot be empty");
     }
-    if (impl_->subject_[0] != 'O') {
-        throw InvalidClaimsError("Operator subject must start with 'O'");
-    }
+    internal::checkSubjectKind(impl_->subject_, 'O', "Operator");
+    // Go's ExpectedPrefixes, enforced at decode as Go's Decode does
+    internal::checkIssuerKind(impl_->issuer_, "O", "Operator");
 }
 
 std::unique_ptr<OperatorClaims> decodeOperatorClaims(const std::string& jwt) {
@@ -282,6 +280,7 @@ std::unique_ptr<OperatorClaims> decodeOperatorClaims(const std::string& jwt) {
     // signature rule, v1 → v2 migration — shared in decodeEnvelope.
     auto env = decodeEnvelope(jwt);
     const json& payload = env.payload;
+    return guardJson([&]() -> std::unique_ptr<OperatorClaims> {
     auto nats = payload["nats"];
     if (!nats.contains("type") || nats["type"] != "operator") {
         throw InvalidClaimsError(
@@ -292,7 +291,7 @@ std::unique_ptr<OperatorClaims> decodeOperatorClaims(const std::string& jwt) {
 
     std::string subject = payload.at("sub").get<std::string>();
     std::string issuer = payload.at("iss").get<std::string>();
-    std::int64_t iat = payload.at("iat").get<std::int64_t>();
+    std::int64_t iat = intField(payload, "iat", 0);  // Go: omitempty → 0
 
     // Create OperatorClaims object
     auto claims = std::make_unique<OperatorClaims>(subject);
@@ -307,34 +306,28 @@ std::unique_ptr<OperatorClaims> decodeOperatorClaims(const std::string& jwt) {
         claims->setName(payload["name"].get<std::string>());
     }
 
-    if (payload.contains("exp")) {
-        claims->setExpires(payload["exp"].get<std::int64_t>());
-    }
+    claims->setExpires(intField(payload, "exp", 0));
     claims->impl_->audience_ = payload.value("aud", "");
-    claims->impl_->notBefore_ = payload.value("nbf", std::int64_t{0});
-    if (nats.contains("tags") && nats["tags"].is_array())
-        claims->impl_->tags_ = nats["tags"].get<std::vector<std::string>>();
+    claims->impl_->notBefore_ = intField(payload, "nbf", 0);
+    if (const auto* a = arrayField(nats, "tags")) claims->impl_->tags_ = a->get<std::vector<std::string>>();
 
     claims->impl_->accountServerURL_ = nats.value("account_server_url", "");
-    if (nats.contains("operator_service_urls")) {
-        claims->impl_->operatorServiceURLs_ =
-            nats["operator_service_urls"].get<std::vector<std::string>>();
+    if (const auto* a = arrayField(nats, "operator_service_urls")) {
+        claims->impl_->operatorServiceURLs_ = a->get<std::vector<std::string>>();
     }
     claims->impl_->systemAccount_ = nats.value("system_account", "");
     claims->impl_->assertServerVersion_ = nats.value("assert_server_version", "");
     claims->impl_->strictSigningKeyUsage_ = nats.value("strict_signing_key_usage", false);
 
     // Extract signing keys if present
-    if (nats.contains("signing_keys") && nats["signing_keys"].is_array()) {
-        for (const auto& key : nats["signing_keys"]) {
-            claims->addSigningKey(key.get<std::string>());
-        }
+    if (const auto* a = arrayField(nats, "signing_keys")) {
+        for (const auto& key : *a) claims->addSigningKey(key.get<std::string>());
     }
 
     // Validate the decoded claims
     claims->checkStructure();
-
     return claims;
+    });
 }
 
 }

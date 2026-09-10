@@ -3,6 +3,7 @@
 // Permissions/Limits family — wire shapes measured from Go (see tests).
 #include "jwt/permissions.hpp"
 #include <nlohmann/json.hpp>
+#include "jwt_utils.hpp"
 
 namespace jwt::internal {
 
@@ -15,8 +16,8 @@ inline nlohmann::json permissionToJson(const Permission& p) {
 
 inline Permission permissionFromJson(const nlohmann::json& j) {
     Permission p;
-    if (j.contains("allow")) p.allow = j["allow"].get<std::vector<std::string>>();
-    if (j.contains("deny")) p.deny = j["deny"].get<std::vector<std::string>>();
+    if (const auto* a = arrayField(j, "allow")) p.allow = a->get<std::vector<std::string>>();
+    if (const auto* a = arrayField(j, "deny")) p.deny = a->get<std::vector<std::string>>();
     return p;
 }
 
@@ -50,25 +51,24 @@ inline void userPermissionLimitsFromJson(const nlohmann::json& j, Permissions& p
                                          UserLimits& limits, bool& bearerToken,
                                          bool& proxyRequired,
                                          std::vector<std::string>& connTypes) {
-    if (j.contains("pub")) perms.pub = permissionFromJson(j["pub"]);
-    if (j.contains("sub")) perms.sub = permissionFromJson(j["sub"]);
-    if (j.contains("resp") && j["resp"].is_object()) {
-        perms.resp = ResponsePermission{j["resp"].value("max", 0),
-                                        j["resp"].value("ttl", std::int64_t{0})};
+    if (const auto* o = objectField(j, "pub")) perms.pub = permissionFromJson(*o);
+    if (const auto* o = objectField(j, "sub")) perms.sub = permissionFromJson(*o);
+    if (const auto* o = objectField(j, "resp")) {
+        perms.resp = ResponsePermission{
+            static_cast<int>(intField(*o, "max", 0)), intField(*o, "ttl", 0)};
     }
-    limits.subs = j.value("subs", std::int64_t{0});
-    limits.data = j.value("data", std::int64_t{0});
-    limits.payload = j.value("payload", std::int64_t{0});
-    if (j.contains("src") && j["src"].is_array())
-        limits.src = j["src"].get<std::vector<std::string>>();
-    if (j.contains("times") && j["times"].is_array())
-        for (const auto& tr : j["times"])
+    limits.subs = intField(j, "subs", 0);
+    limits.data = intField(j, "data", 0);
+    limits.payload = intField(j, "payload", 0);
+    if (const auto* a = arrayField(j, "src")) limits.src = a->get<std::vector<std::string>>();
+    if (const auto* a = arrayField(j, "times"))
+        for (const auto& tr : *a)
             limits.times.push_back({tr.value("start", ""), tr.value("end", "")});
     limits.locale = j.value("times_location", "");
     bearerToken = j.value("bearer_token", false);
     proxyRequired = j.value("proxy_required", false);
-    if (j.contains("allowed_connection_types"))
-        connTypes = j["allowed_connection_types"].get<std::vector<std::string>>();
+    if (const auto* a = arrayField(j, "allowed_connection_types"))
+        connTypes = a->get<std::vector<std::string>>();
 }
 
 // Go's UserScope: kind/key/role/template/description, none omitempty.
@@ -87,8 +87,8 @@ inline UserScope userScopeFromJson(const nlohmann::json& j) {
     s.key = j.value("key", "");
     s.role = j.value("role", "");
     s.description = j.value("description", "");
-    if (j.contains("template")) {
-        userPermissionLimitsFromJson(j["template"], s.permissions, s.limits,
+    if (const auto* t = objectField(j, "template")) {
+        userPermissionLimitsFromJson(*t, s.permissions, s.limits,
                                      s.bearerToken, s.proxyRequired, s.allowedConnectionTypes);
     }
     return s;

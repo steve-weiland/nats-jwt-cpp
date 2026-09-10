@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <sstream>
 #include <array>
+#include <limits>
 #include <cctype>
 #include <stdexcept>
 
@@ -190,12 +191,19 @@ namespace {
     }
 }
 
-void validateHeader(const std::string& headerJson) {
+nlohmann::json validateHeader(const std::string& headerJson) {
     nlohmann::json header;
     try {
         header = nlohmann::json::parse(headerJson);
     } catch (const nlohmann::json::exception& e) {
         throw MalformedTokenError(std::string("Invalid JWT header JSON: ") + e.what());
+    }
+    // pre-signature, so every shape error is a MALFORMED token, never a leak
+    if (!header.is_object()) throw MalformedTokenError("JWT header is not an object");
+    for (const char* k : {"typ", "alg"}) {
+        if (header.contains(k) && !header[k].is_string()) {
+            throw MalformedTokenError(std::string("JWT header field '") + k + "' is not a string");
+        }
     }
     const std::string typ = header.value("typ", "");
     if (upper(typ) != JWT_TYPE) {
@@ -205,6 +213,80 @@ void validateHeader(const std::string& headerJson) {
     if (alg != "ed25519" && alg != JWT_ALGORITHM) {
         throw InvalidClaimsError("unexpected \"" + header.value("alg", "") + "\" algorithm");
     }
+    return header;
+}
+
+std::int64_t intValue(const nlohmann::json& v, const char* what) {
+    if (v.is_number_unsigned()) {
+        const auto u = v.get<std::uint64_t>();
+        if (u > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+            throw MalformedTokenError(std::string("field '") + what + "' is out of range");
+        }
+        return static_cast<std::int64_t>(u);
+    }
+    if (!v.is_number_integer()) {
+        throw MalformedTokenError(std::string("field '") + what + "' must be an integer");
+    }
+    return v.get<std::int64_t>();
+}
+
+std::int64_t intField(const nlohmann::json& j, const char* key, std::int64_t def) {
+    if (!j.is_object() || !j.contains(key) || j[key].is_null()) return def;
+    return intValue(j[key], key);
+}
+
+std::uint64_t uintField(const nlohmann::json& j, const char* key, std::uint64_t def, std::uint64_t max) {
+    if (!j.is_object() || !j.contains(key) || j[key].is_null()) return def;
+    const auto& v = j[key];
+    if (!v.is_number_integer() || (v.is_number_integer() && !v.is_number_unsigned() && v.get<std::int64_t>() < 0)) {
+        throw MalformedTokenError(std::string("field '") + key + "' must be a non-negative integer");
+    }
+    const auto u = v.get<std::uint64_t>();
+    if (u > max) throw MalformedTokenError(std::string("field '") + key + "' is out of range");
+    return u;
+}
+
+const nlohmann::json* arrayField(const nlohmann::json& j, const char* key) {
+    if (!j.is_object() || !j.contains(key) || j[key].is_null()) return nullptr;
+    if (!j[key].is_array()) throw MalformedTokenError(std::string("field '") + key + "' must be an array");
+    return &j[key];
+}
+
+const nlohmann::json* objectField(const nlohmann::json& j, const char* key) {
+    if (!j.is_object() || !j.contains(key) || j[key].is_null()) return nullptr;
+    if (!j[key].is_object()) throw MalformedTokenError(std::string("field '") + key + "' must be an object");
+    return &j[key];
+}
+
+void checkIssuerKind(const std::string& issuer, std::string_view kinds, const char* claimName) {
+    std::string names;
+    for (char k : kinds) {
+        bool ok = false;
+        const char* name = "";
+        switch (k) {
+            case 'O': ok = nkeys::IsValidPublicOperatorKey(issuer); name = "operator"; break;
+            case 'A': ok = nkeys::IsValidPublicAccountKey(issuer); name = "account"; break;
+            case 'U': ok = nkeys::IsValidPublicUserKey(issuer); name = "user"; break;
+            case 'N': ok = nkeys::IsValidPublicServerKey(issuer); name = "server"; break;
+            default: break;
+        }
+        if (ok) return;
+        names += std::string(names.empty() ? "" : " or ") + name;
+    }
+    throw InvalidClaimsError(std::string(claimName) + " JWTs must be signed by an " + names +
+                             " key (unable to validate expected prefixes)");
+}
+
+void checkSubjectKind(const std::string& subject, char kind, const char* claimName) {
+    bool ok = false;
+    const char* name = "";
+    switch (kind) {
+        case 'O': ok = nkeys::IsValidPublicOperatorKey(subject); name = "an operator"; break;
+        case 'A': ok = nkeys::IsValidPublicAccountKey(subject); name = "an account"; break;
+        case 'U': ok = nkeys::IsValidPublicUserKey(subject); name = "a user"; break;
+        default: break;
+    }
+    if (!ok) throw InvalidClaimsError(std::string(claimName) + " subject must be " + name + " public key");
 }
 
 Envelope decodeEnvelope(const std::string& token) {
@@ -212,8 +294,8 @@ Envelope decodeEnvelope(const std::string& token) {
     auto parts = parseJwt(token);
     auto header_bytes = base64url_decode(parts.header_b64);
     const std::string headerJson(header_bytes.begin(), header_bytes.end());
-    validateHeader(headerJson);
-    const std::string alg = lower(json::parse(headerJson).value("alg", ""));
+    const json header = validateHeader(headerJson);
+    const std::string alg = lower(header.value("alg", ""));
 
     auto payload_bytes = base64url_decode(parts.payload_b64);
     json payload;
@@ -224,16 +306,19 @@ Envelope decodeEnvelope(const std::string& token) {
     }
     if (!payload.is_object()) throw MalformedTokenError("JWT payload is not an object");
 
-    // Go's identifier.Version(): a top-level type marks the v1 layout
-    const bool v1Layout = payload.contains("type") && payload["type"].is_string() &&
-                          !payload["type"].get<std::string>().empty();
-    int version = 1;
+    // Go's identifier: a top-level type (a string, or an unmarshal error)
+    // marks the v1 layout; nats.type likewise must be a string if present
+    if (payload.contains("type") && !payload["type"].is_string()) {
+        throw MalformedTokenError("JWT 'type' is not a string");
+    }
+    const bool v1Layout = payload.contains("type") && !payload["type"].get<std::string>().empty();
+    std::int64_t version = 1;
     if (!v1Layout) {
-        version = 0;
-        if (payload.contains("nats") && payload["nats"].is_object() &&
-            payload["nats"].contains("version") && payload["nats"]["version"].is_number_integer()) {
-            version = payload["nats"]["version"].get<int>();
+        const json* nats = objectField(payload, "nats");
+        if (nats && nats->contains("type") && !(*nats)["type"].is_string()) {
+            throw MalformedTokenError("JWT nats.type is not a string");
         }
+        version = nats ? intField(*nats, "version", 0) : 0;
     }
     if (version > JWT_VERSION) {
         throw InvalidClaimsError("JWT was generated by a newer version");
@@ -243,13 +328,11 @@ Envelope decodeEnvelope(const std::string& token) {
                                  " or less - received " + std::to_string(version));
     }
 
-    std::string issuer;
-    try {
-        issuer = payload.at("iss").get<std::string>();
-        (void)payload.at("sub").get<std::string>();
-    } catch (const json::exception& e) {
-        throw MalformedTokenError(std::string("Invalid JWT payload: ") + e.what());
+    if (!payload.contains("iss") || !payload["iss"].is_string() ||
+        !payload.contains("sub") || !payload["sub"].is_string()) {
+        throw MalformedTokenError("JWT payload lacks string 'iss'/'sub'");
     }
+    const std::string issuer = payload["iss"].get<std::string>();
     // Decode is AUTHENTICATED (Go parity): v1 signed the payload chunk only,
     // v2 signs "header.payload" — the rule follows the PAYLOAD version, as in
     // Go's Decode (not the header alg).
@@ -281,7 +364,7 @@ Envelope decodeEnvelope(const std::string& token) {
         payload["nats"] = nats;
         for (const char* k : {"type", "tags", "issuer_account"}) payload.erase(k);
     }
-    return Envelope{std::move(payload), version, alg};
+    return Envelope{std::move(payload), static_cast<int>(version), alg};
 }
 
 JwtParts parseJwt(std::string_view jwt) {

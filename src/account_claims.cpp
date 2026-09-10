@@ -6,6 +6,7 @@
 #include "jwt_utils.hpp"
 #include "scope_serialization.hpp"
 #include <algorithm>
+#include <limits>
 #include <chrono>
 #include <map>
 #include <nkeys/nkeys.hpp>
@@ -32,13 +33,13 @@ namespace {
 
     JetStreamLimits jetStreamLimitsFrom(const json& j) {
         JetStreamLimits out;
-        out.memStorage = j.value("mem_storage", std::int64_t{0});
-        out.diskStorage = j.value("disk_storage", std::int64_t{0});
-        out.streams = j.value("streams", std::int64_t{0});
-        out.consumer = j.value("consumer", std::int64_t{0});
-        out.maxAckPending = j.value("max_ack_pending", std::int64_t{0});
-        out.memoryMaxStreamBytes = j.value("mem_max_stream_bytes", std::int64_t{0});
-        out.diskMaxStreamBytes = j.value("disk_max_stream_bytes", std::int64_t{0});
+        out.memStorage = internal::intField(j, "mem_storage", 0);
+        out.diskStorage = internal::intField(j, "disk_storage", 0);
+        out.streams = internal::intField(j, "streams", 0);
+        out.consumer = internal::intField(j, "consumer", 0);
+        out.maxAckPending = internal::intField(j, "max_ack_pending", 0);
+        out.memoryMaxStreamBytes = internal::intField(j, "mem_max_stream_bytes", 0);
+        out.diskMaxStreamBytes = internal::intField(j, "disk_max_stream_bytes", 0);
         out.maxBytesRequired = j.value("max_bytes_required", false);
         return out;
     }
@@ -69,18 +70,19 @@ namespace {
 
     AccountLimits accountLimitsFromJson(const json& j) {
         AccountLimits l;
-        l.subs = j.value("subs", std::int64_t{0});
-        l.data = j.value("data", std::int64_t{0});
-        l.payload = j.value("payload", std::int64_t{0});
-        l.imports = j.value("imports", std::int64_t{0});
-        l.exports = j.value("exports", std::int64_t{0});
+        l.subs = internal::intField(j, "subs", 0);
+        l.data = internal::intField(j, "data", 0);
+        l.payload = internal::intField(j, "payload", 0);
+        l.imports = internal::intField(j, "imports", 0);
+        l.exports = internal::intField(j, "exports", 0);
         l.wildcardExports = j.value("wildcards", false);
         l.disallowBearer = j.value("disallow_bearer", false);
-        l.conn = j.value("conn", std::int64_t{0});
-        l.leafNodeConn = j.value("leaf", std::int64_t{0});
+        l.conn = internal::intField(j, "conn", 0);
+        l.leafNodeConn = internal::intField(j, "leaf", 0);
         l.jetStream = jetStreamLimitsFrom(j);
-        if (j.contains("tiered_limits") && j["tiered_limits"].is_object()) {
-            for (const auto& [name, tier] : j["tiered_limits"].items()) {
+        if (const auto* t = internal::objectField(j, "tiered_limits")) {
+            for (const auto& [name, tier] : t->items()) {
+                if (!tier.is_object()) throw MalformedTokenError("tiered_limits entry must be an object");
                 l.tieredLimits[name] = jetStreamLimitsFrom(tier);
             }
         }
@@ -174,22 +176,20 @@ namespace {
         e.subject = j.value("subject", "");
         e.type = exportTypeFrom(j.value("type", ""));
         e.tokenReq = j.value("token_req", false);
-        if (j.contains("revocations") && j["revocations"].is_object()) {
-            for (const auto& [k, v] : j["revocations"].items()) {
-                e.revocations[k] = v.get<std::int64_t>();
-            }
+        if (const auto* r = internal::objectField(j, "revocations")) {
+            for (const auto& [k, v] : r->items()) e.revocations[k] = internal::intValue(v, "revocations");
         }
         e.responseType = j.value("response_type", "");
-        e.responseThresholdNanos = j.value("response_threshold", std::int64_t{0});
-        if (j.contains("service_latency") && j["service_latency"].is_object()) {
-            const auto& lat = j["service_latency"];
+        e.responseThresholdNanos = internal::intField(j, "response_threshold", 0);
+        if (const auto* lat = internal::objectField(j, "service_latency")) {
             ServiceLatency sl;
-            if (lat.contains("sampling") && lat["sampling"].is_string()) sl.sampling = 0;
-            else sl.sampling = lat.value("sampling", 0);
-            sl.results = lat.value("results", "");
+            if (lat->contains("sampling") && (*lat)["sampling"].is_string()) sl.sampling = 0;
+            else sl.sampling = static_cast<int>(internal::uintField(*lat, "sampling", 0, 100));
+            sl.results = lat->value("results", "");
             e.latency = sl;
         }
-        e.accountTokenPosition = j.value("account_token_position", 0u);
+        e.accountTokenPosition = static_cast<unsigned>(
+            internal::uintField(j, "account_token_position", 0, std::numeric_limits<unsigned>::max()));
         e.advertise = j.value("advertise", false);
         e.allowTrace = j.value("allow_trace", false);
         e.description = j.value("description", "");
@@ -264,10 +264,9 @@ namespace {
 
     ExternalAuthorization externalAuthorizationFromJson(const json& j) {
         ExternalAuthorization a;
-        if (j.contains("auth_users") && j["auth_users"].is_array())
-            a.authUsers = j["auth_users"].get<std::vector<std::string>>();
-        if (j.contains("allowed_accounts") && j["allowed_accounts"].is_array())
-            a.allowedAccounts = j["allowed_accounts"].get<std::vector<std::string>>();
+        if (const auto* arr = internal::arrayField(j, "auth_users")) a.authUsers = arr->get<std::vector<std::string>>();
+        if (const auto* arr = internal::arrayField(j, "allowed_accounts"))
+            a.allowedAccounts = arr->get<std::vector<std::string>>();
         a.xkey = j.value("xkey", "");
         return a;
     }
@@ -503,11 +502,8 @@ std::string AccountClaims::encodeWithSigner(const std::string& issuerPublicKey,
     // Go's doEncode: the issuer IS the signing key — derived, never taken on
     // trust from a setter (iss can then never disagree with the signature) —
     // and iat is stamped fresh at every encode.
+    internal::checkIssuerKind(issuerPublicKey, "OA", "Account");
     impl_->issuer_ = issuerPublicKey;
-    if (!nkeys::IsValidPublicOperatorKey(impl_->issuer_) &&
-        !nkeys::IsValidPublicAccountKey(impl_->issuer_)) {
-        throw InvalidClaimsError("Account JWTs must be signed by an operator or account key");
-    }
     impl_->issuedAt_ = getCurrentTimestamp();
 
     validate();
@@ -637,14 +633,10 @@ void AccountClaims::checkStructure() const {
     if (impl_->issuer_.empty()) {
         throw InvalidClaimsError("Account issuer cannot be empty (must be signed by Operator)");
     }
-    if (impl_->subject_[0] != 'A') {
-        throw InvalidClaimsError("Account subject must start with 'A'");
-    }
+    internal::checkSubjectKind(impl_->subject_, 'A', "Account");
     // Go's ExpectedPrefixes for accounts: {operator, account} — self-signed
     // accounts are the documented flow (self-sign, hand to operator, re-sign).
-    if (impl_->issuer_[0] != 'O' && impl_->issuer_[0] != 'A') {
-        throw InvalidClaimsError("Account issuer must be an Operator or Account (start with 'O' or 'A')");
-    }
+    internal::checkIssuerKind(impl_->issuer_, "OA", "Account");
 }
 
 std::unique_ptr<AccountClaims> decodeAccountClaims(const std::string& jwt) {
@@ -656,6 +648,7 @@ std::unique_ptr<AccountClaims> decodeAccountClaims(const std::string& jwt) {
     // signature rule, v1 → v2 migration — shared in decodeEnvelope.
     auto env = decodeEnvelope(jwt);
     const json& payload = env.payload;
+    return guardJson([&]() -> std::unique_ptr<AccountClaims> {
     auto nats = payload["nats"];
     if (!nats.contains("type") || nats["type"] != "account") {
         throw InvalidClaimsError(
@@ -666,55 +659,48 @@ std::unique_ptr<AccountClaims> decodeAccountClaims(const std::string& jwt) {
 
     std::string subject = payload.at("sub").get<std::string>();
     std::string issuer = payload.at("iss").get<std::string>();
-    std::int64_t iat = payload.at("iat").get<std::int64_t>();
+    std::int64_t iat = intField(payload, "iat", 0);  // Go: omitempty → 0
 
     // Create AccountClaims object
     auto claims = std::make_unique<AccountClaims>(subject);
     claims->impl_->natsRaw_ = nats;
 
     // Typed account configuration (fix-plan group 1)
-    if (nats.contains("limits") && nats["limits"].is_object()) {
-        claims->impl_->limits_ = accountLimitsFromJson(nats["limits"]);
+    if (const auto* lim = objectField(nats, "limits")) {
+        claims->impl_->limits_ = accountLimitsFromJson(*lim);
     } else {
         claims->impl_->limits_ = AccountLimits{0, 0, 0, 0, 0, false, false, 0, 0, {}, {}};
     }
-    if (nats.contains("default_permissions") && nats["default_permissions"].is_object()) {
-        const auto& dp = nats["default_permissions"];
-        if (dp.contains("pub")) claims->impl_->defaultPermissions_.pub =
-            internal::permissionFromJson(dp["pub"]);
-        if (dp.contains("sub")) claims->impl_->defaultPermissions_.sub =
-            internal::permissionFromJson(dp["sub"]);
+    if (const auto* dp = objectField(nats, "default_permissions")) {
+        if (const auto* o = objectField(*dp, "pub")) claims->impl_->defaultPermissions_.pub = internal::permissionFromJson(*o);
+        if (const auto* o = objectField(*dp, "sub")) claims->impl_->defaultPermissions_.sub = internal::permissionFromJson(*o);
     } else {
         claims->impl_->defaultPermissions_ = Permissions{};
     }
-    if (nats.contains("mappings") && nats["mappings"].is_object()) {
-        for (const auto& [from, arr] : nats["mappings"].items()) {
+    if (const auto* maps = objectField(nats, "mappings")) {
+        for (const auto& [from, arr] : maps->items()) {
+            if (!arr.is_array()) throw MalformedTokenError("mappings entry must be an array");
             std::vector<WeightedMapping> wms;
             for (const auto& entry : arr) {
+                // Go: Weight is uint8 — out of range is an unmarshal error, never a wrap
                 wms.push_back({entry.value("subject", ""),
-                               static_cast<std::uint8_t>(entry.value("weight", 0)),
+                               static_cast<std::uint8_t>(uintField(entry, "weight", 0, 255)),
                                entry.value("cluster", "")});
             }
             claims->impl_->mappings_[from] = std::move(wms);
         }
     }
-    if (nats.contains("exports") && nats["exports"].is_array()) {
-        for (const auto& e : nats["exports"]) {
-            claims->impl_->exports_.push_back(exportFromJson(e));
-        }
+    if (const auto* a = arrayField(nats, "exports")) {
+        for (const auto& e : *a) claims->impl_->exports_.push_back(exportFromJson(e));
     }
-    if (nats.contains("imports") && nats["imports"].is_array()) {
-        for (const auto& i : nats["imports"]) {
-            claims->impl_->imports_.push_back(importFromJson(i));
-        }
+    if (const auto* a = arrayField(nats, "imports")) {
+        for (const auto& i : *a) claims->impl_->imports_.push_back(importFromJson(i));
     }
-    if (nats.contains("revocations") && nats["revocations"].is_object()) {
-        for (const auto& [key, ts] : nats["revocations"].items()) {
-            claims->impl_->revocations_[key] = ts.get<std::int64_t>();
-        }
+    if (const auto* r = objectField(nats, "revocations")) {
+        for (const auto& [key, ts] : r->items()) claims->impl_->revocations_[key] = intValue(ts, "revocations");
     }
-    if (nats.contains("authorization") && nats["authorization"].is_object()) {
-        claims->impl_->authorization_ = externalAuthorizationFromJson(nats["authorization"]);
+    if (const auto* o = objectField(nats, "authorization")) {
+        claims->impl_->authorization_ = externalAuthorizationFromJson(*o);
     }
     claims->impl_->description_ = nats.value("description", "");
     claims->impl_->infoURL_ = nats.value("info_url", "");
@@ -728,18 +714,15 @@ std::unique_ptr<AccountClaims> decodeAccountClaims(const std::string& jwt) {
         claims->setName(payload["name"].get<std::string>());
     }
 
-    if (payload.contains("exp")) {
-        claims->setExpires(payload["exp"].get<std::int64_t>());
-    }
+    claims->setExpires(intField(payload, "exp", 0));
     claims->impl_->audience_ = payload.value("aud", "");
-    claims->impl_->notBefore_ = payload.value("nbf", std::int64_t{0});
-    if (nats.contains("tags") && nats["tags"].is_array())
-        claims->impl_->tags_ = nats["tags"].get<std::vector<std::string>>();
+    claims->impl_->notBefore_ = intField(payload, "nbf", 0);
+    if (const auto* a = arrayField(nats, "tags")) claims->impl_->tags_ = a->get<std::vector<std::string>>();
 
     // Extract signing keys if present — a mixed array: plain keys are
     // strings, scoped keys are user_scope objects (Go's SigningKeys map)
-    if (nats.contains("signing_keys") && nats["signing_keys"].is_array()) {
-        for (const auto& key : nats["signing_keys"]) {
+    if (const auto* a = arrayField(nats, "signing_keys")) {
+        for (const auto& key : *a) {
             if (key.is_string()) {
                 claims->addSigningKey(key.get<std::string>());
             } else if (key.is_object() && key.value("kind", "") == "user_scope") {
@@ -752,8 +735,8 @@ std::unique_ptr<AccountClaims> decodeAccountClaims(const std::string& jwt) {
 
     // Validate the decoded claims
     claims->checkStructure();
-
     return claims;
+    });
 }
 
 }

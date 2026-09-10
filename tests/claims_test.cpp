@@ -2021,3 +2021,117 @@ TEST(GenericClaimsTest, DecodeGenericFollowsTheHeaderAlgAndCopiesV1Fields) {
         EXPECT_THROW((void)jwt::decode(mintWithHeader(V2_HEADER, p, *okp, false)), jwt::InvalidClaimsError) << t;
     }
 }
+
+// ============================================================================
+// Decode hardening (review 2026-09-09, R1–R3). Every failure of an
+// untrusted token must surface as a jwt::Error — Go refuses wrong-typed
+// fields with an unmarshal error (and decodes a MISSING iat as 0); Go's
+// Decode enforces ExpectedPrefixes for every claim type; Go's integer fields
+// reject floats / out-of-range values.
+// ============================================================================
+
+namespace {
+    // any jwt::Error is fine; what must NEVER happen is a non-jwt exception
+    template <class F> void expectJwtError(const char* what, F&& f) {
+        try { f(); ADD_FAILURE() << what << ": accepted"; }
+        catch (const jwt::Error&) { SUCCEED(); }
+        catch (const std::exception& e) { ADD_FAILURE() << what << ": non-jwt exception " << e.what(); }
+    }
+    std::string opPayload(const nkeys::KeyPair& iss, const nkeys::KeyPair& sub, const std::string& extraTop,
+                          const std::string& nats = R"({"type":"operator","version":2})") {
+        return R"({"iss":")" + iss.publicString() + R"(","sub":")" + sub.publicString() + R"(","jti":"x")" +
+               extraTop + R"(,"nats":)" + nats + "}";
+    }
+}
+
+TEST(DecodeHardeningTest, HostileHeadersAndPayloadTypesAreJwtErrors) {
+    auto okp = nkeys::CreateOperator();
+    expectJwtError("header []", [&] { (void)jwt::decode(mintWithHeader("[]", opPayload(*okp, *okp, R"(,"iat":1)"), *okp, false)); });
+    expectJwtError("header alg number", [&] { (void)jwt::decode(mintWithHeader(R"({"typ":"JWT","alg":5})", opPayload(*okp, *okp, R"(,"iat":1)"), *okp, false)); });
+    expectJwtError("header typ number", [&] { (void)jwt::decode(mintWithHeader(R"({"typ":1,"alg":"ed25519-nkey"})", opPayload(*okp, *okp, R"(,"iat":1)"), *okp, false)); });
+    expectJwtError("payload array", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, "[]", *okp, false)); });
+    expectJwtError("iat string", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, opPayload(*okp, *okp, R"(,"iat":"x")"), *okp, false)); });
+    expectJwtError("exp string", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, opPayload(*okp, *okp, R"(,"iat":1,"exp":"soon")"), *okp, false)); });
+    expectJwtError("name number", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, opPayload(*okp, *okp, R"(,"iat":1,"name":7)"), *okp, false)); });
+    expectJwtError("nats.type number", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, opPayload(*okp, *okp, R"(,"iat":1)", R"({"type":7,"version":2})"), *okp, false)); });
+    expectJwtError("tags [1]", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, opPayload(*okp, *okp, R"(,"iat":1)", R"({"type":"operator","version":2,"tags":[1]})"), *okp, false)); });
+    expectJwtError("signing_keys number", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, opPayload(*okp, *okp, R"(,"iat":1)", R"({"type":"operator","version":2,"signing_keys":5})"), *okp, false)); });
+    // account / user / activation / auth field types
+    auto akp = nkeys::CreateAccount(); auto ukp = nkeys::CreateUser(); auto skp = nkeys::CreateServer();
+    auto accP = [&](const std::string& natsExtra) {
+        return R"({"iss":")" + okp->publicString() + R"(","sub":")" + akp->publicString() + R"(","jti":"x","iat":1,"nats":{"type":"account","version":2)" + natsExtra + "}}";
+    };
+    expectJwtError("limits.subs string", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, accP(R"(,"limits":{"subs":"x"})"), *okp, false)); });
+    expectJwtError("mappings string", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, accP(R"(,"mappings":{"a":"b"})"), *okp, false)); });
+    expectJwtError("revocations string", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, accP(R"(,"revocations":{"*":"x"})"), *okp, false)); });
+    expectJwtError("default_permissions allow number", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, accP(R"(,"default_permissions":{"pub":{"allow":1}})"), *okp, false)); });
+    expectJwtError("scope template times [1]", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, accP(R"(,"signing_keys":[{"kind":"user_scope","key":")" + nkeys::CreateAccount()->publicString() + R"(","role":"r","template":{"times":[1]},"description":""}])"), *okp, false)); });
+    expectJwtError("tiered_limits string", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, accP(R"(,"limits":{"tiered_limits":{"R1":"x"}})"), *okp, false)); });
+    expectJwtError("exports string", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, accP(R"(,"exports":"x")"), *okp, false)); });
+    auto userP = [&](const std::string& natsExtra) {
+        return R"({"iss":")" + akp->publicString() + R"(","sub":")" + ukp->publicString() + R"(","jti":"x","iat":1,"nats":{"type":"user","version":2)" + natsExtra + "}}";
+    };
+    expectJwtError("pub.allow string", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, userP(R"(,"pub":{"allow":"x"})"), *akp, false)); });
+    expectJwtError("resp.max string", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, userP(R"(,"resp":{"max":"x"})"), *akp, false)); });
+    expectJwtError("times [\"x\"]", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, userP(R"(,"times":["x"])"), *akp, false)); });
+    expectJwtError("issuer_account number", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, userP(R"(,"issuer_account":7)"), *akp, false)); });
+    expectJwtError("allowed_connection_types [1]", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, userP(R"(,"allowed_connection_types":[1])"), *akp, false)); });
+    auto reqP = [&](const std::string& natsExtra) {
+        return R"({"iss":")" + skp->publicString() + R"(","sub":")" + akp->publicString() + R"(","jti":"x","iat":1,"nats":{"type":"authorization_request","version":2,"user_nkey":")" + ukp->publicString() + R"(")" + natsExtra + "}}";
+    };
+    expectJwtError("client_info.id string", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, reqP(R"(,"client_info":{"id":"x"})"), *skp, false)); });
+    expectJwtError("connect_opts.protocol string", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, reqP(R"(,"connect_opts":{"protocol":"x"})"), *skp, false)); });
+    expectJwtError("client_tls.certs number", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, reqP(R"(,"client_tls":{"certs":1})"), *skp, false)); });
+    expectJwtError("generic name number", [&] { (void)jwt::decodeGeneric(mintWithHeader(V2_HEADER, opPayload(*okp, *okp, R"(,"iat":1,"name":7)", R"({"type":"zzz","version":2})"), *okp, false)); });
+    // ...but a MISSING iat is fine (Go: omitempty → 0)
+    auto noIat = jwt::decode(mintWithHeader(V2_HEADER, opPayload(*okp, *okp, ""), *okp, false));
+    EXPECT_EQ(noIat->issuedAt(), 0);
+}
+
+TEST(DecodeHardeningTest, IntegersAreStrict) {
+    auto okp = nkeys::CreateOperator(); auto akp = nkeys::CreateAccount();
+    // version wrap: 2^32+2 must not read as 2
+    expectJwtError("version 4294967298", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, opPayload(*okp, *okp, R"(,"iat":1)", R"({"type":"operator","version":4294967298})"), *okp, false)); });
+    expectJwtError("version 2.0 float", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, opPayload(*okp, *okp, R"(,"iat":1)", R"({"type":"operator","version":2.0})"), *okp, false)); });
+    expectJwtError("exp float 1e30", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, opPayload(*okp, *okp, R"(,"iat":1,"exp":1e30)"), *okp, false)); });
+    expectJwtError("iat 1.5", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, opPayload(*okp, *okp, R"(,"iat":1.5)"), *okp, false)); });
+    auto accP = [&](const std::string& natsExtra) {
+        return R"({"iss":")" + okp->publicString() + R"(","sub":")" + akp->publicString() + R"(","jti":"x","iat":1,"nats":{"type":"account","version":2)" + natsExtra + "}}";
+    };
+    // Go: Weight is uint8 — 300 is an unmarshal error, never 44
+    expectJwtError("mapping weight 300", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, accP(R"(,"mappings":{"a":[{"subject":"b","weight":300}]})"), *okp, false)); });
+    expectJwtError("mapping weight -1", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, accP(R"(,"mappings":{"a":[{"subject":"b","weight":-1}]})"), *okp, false)); });
+    expectJwtError("account_token_position -1", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, accP(R"(,"exports":[{"name":"e","subject":"a.*","type":"service","account_token_position":-1}])"), *okp, false)); });
+    expectJwtError("limits.conn 1.5", [&] { (void)jwt::decode(mintWithHeader(V2_HEADER, accP(R"(,"limits":{"conn":1.5})"), *okp, false)); });
+    // in-range values still read correctly
+    auto ok = jwt::decodeAccountClaims(mintWithHeader(V2_HEADER, accP(R"(,"mappings":{"a":[{"subject":"b","weight":255}]},"limits":{"conn":-1})"), *okp, false));
+    EXPECT_EQ(ok->mappings().at("a")[0].weight, 255);
+    EXPECT_EQ(ok->limits().conn, -1);
+}
+
+TEST(DecodeHardeningTest, IssuerKindIsEnforcedAtDecodeForEveryType) {
+    auto okp = nkeys::CreateOperator(); auto akp = nkeys::CreateAccount();
+    auto ukp = nkeys::CreateUser(); auto skp = nkeys::CreateServer();
+    auto tok = [&](const nkeys::KeyPair& signer, const std::string& sub, const std::string& nats, const std::string& top = "") {
+        return mintWithHeader(V2_HEADER, R"({"iss":")" + signer.publicString() + R"(","sub":")" + sub + R"(","jti":"x","iat":1)" + top + R"(,"nats":)" + nats + "}", signer, false);
+    };
+    // Go's ExpectedPrefixes: operator {O}, account {O,A}, user {A}, activation {A,O}, request {N}, response {A}
+    EXPECT_THROW((void)jwt::decodeOperatorClaims(tok(*akp, okp->publicString(), R"({"type":"operator","version":2})")), jwt::InvalidClaimsError);
+    EXPECT_THROW((void)jwt::decodeAccountClaims(tok(*ukp, akp->publicString(), R"({"type":"account","version":2})")), jwt::InvalidClaimsError);
+    EXPECT_THROW((void)jwt::decodeUserClaims(tok(*okp, ukp->publicString(), R"({"type":"user","version":2})")), jwt::InvalidClaimsError);
+    EXPECT_THROW((void)jwt::decodeActivationClaims(tok(*ukp, akp->publicString(), R"({"type":"activation","version":2,"subject":"s","kind":"service"})")), jwt::InvalidClaimsError);
+    EXPECT_THROW((void)jwt::decodeAuthorizationRequestClaims(tok(*ukp, akp->publicString(),
+        R"({"type":"authorization_request","version":2,"user_nkey":")" + ukp->publicString() + R"(","server_id":{"name":"","host":"","id":""},"client_info":{},"connect_opts":{"protocol":0}})",
+        R"(,"aud":"nats-authorization-request")")), jwt::InvalidClaimsError);
+    EXPECT_THROW((void)jwt::decodeAuthorizationResponseClaims(tok(*ukp, ukp->publicString(),
+        R"({"type":"authorization_response","version":2,"error":"x"})", R"(,"aud":")" + skp->publicString() + R"(")")), jwt::InvalidClaimsError);
+    // the generic dispatcher applies the same rule
+    EXPECT_THROW((void)jwt::decode(tok(*akp, okp->publicString(), R"({"type":"operator","version":2})")), jwt::InvalidClaimsError);
+    // and the allowed kinds still work (operator-signed activation, self-signed account)
+    EXPECT_NO_THROW((void)jwt::decodeActivationClaims(tok(*okp, akp->publicString(), R"({"type":"activation","version":2,"subject":"s","kind":"service"})")));
+    EXPECT_NO_THROW((void)jwt::decodeAccountClaims(tok(*akp, akp->publicString(), R"({"type":"account","version":2})")));
+    // subjects are checked as FULL keys, not by first byte (Go: IsValidPublic*Key at encode)
+    jwt::OperatorClaims fake("Ogarbage");
+    EXPECT_THROW((void)fake.encode(okp->seedString()), jwt::InvalidClaimsError);
+    EXPECT_THROW((void)jwt::decodeOperatorClaims(tok(*okp, "Ogarbage", R"({"type":"operator","version":2})")), jwt::InvalidClaimsError);
+}
