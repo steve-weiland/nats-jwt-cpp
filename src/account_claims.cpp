@@ -85,6 +85,10 @@ namespace {
                 if (!tier.is_object()) throw MalformedTokenError("tiered_limits entry must be an object");
                 l.tieredLimits[name] = jetStreamLimitsFrom(tier);
             }
+            // Go's loadAccount: tiered limits present → the flat JetStream
+            // limits are ZEROED (decoder_account.go), so a token carrying
+            // both stays valid and re-signable — measured on Go.
+            if (!l.tieredLimits.empty()) l.jetStream = JetStreamLimits{};
         }
         return l;
     }
@@ -535,6 +539,10 @@ std::string AccountClaims::encodeWithSigner(const std::string& issuerPublicKey,
     nats_claims["default_permissions"] = {
         {"pub", internal::permissionToJson(impl_->defaultPermissions_.pub)},
         {"sub", internal::permissionToJson(impl_->defaultPermissions_.sub)}};
+    if (impl_->defaultPermissions_.resp) {  // Go: Permissions.Resp, omitempty
+        nats_claims["default_permissions"]["resp"] = {{"max", impl_->defaultPermissions_.resp->maxMsgs},
+                                                      {"ttl", impl_->defaultPermissions_.resp->ttlNanos}};
+    }
     if (!impl_->mappings_.empty()) {
         json maps = json::object();
         for (const auto& [from, wms] : impl_->mappings_) {
@@ -674,6 +682,10 @@ std::unique_ptr<AccountClaims> decodeAccountClaims(const std::string& jwt) {
     if (const auto* dp = objectField(nats, "default_permissions")) {
         if (const auto* o = objectField(*dp, "pub")) claims->impl_->defaultPermissions_.pub = internal::permissionFromJson(*o);
         if (const auto* o = objectField(*dp, "sub")) claims->impl_->defaultPermissions_.sub = internal::permissionFromJson(*o);
+        if (const auto* o = objectField(*dp, "resp")) {
+            claims->impl_->defaultPermissions_.resp =
+                ResponsePermission{static_cast<int>(intField(*o, "max", 0)), intField(*o, "ttl", 0)};
+        }
     } else {
         claims->impl_->defaultPermissions_ = Permissions{};
     }

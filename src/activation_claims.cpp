@@ -116,6 +116,7 @@ std::string ActivationClaims::encodeWithSigner(const std::string& issuerPublicKe
 
 void ActivationClaims::validate(ValidationResults& vr) const {
     internal::addTimeChecks(vr, impl_->expires_, impl_->notBefore_);
+    if (impl_->importSubject_.empty()) vr.addError("subject cannot be empty");  // Go: Subject.Validate
     if (impl_->importType_ != ExportType::Stream && impl_->importType_ != ExportType::Service) {
         vr.addError("invalid import type: \"" + std::string(exportTypeToString(impl_->importType_)) + "\"");
     }
@@ -135,17 +136,10 @@ void ActivationClaims::checkStructure() const {
     if (impl_->subject_.empty()) {
         throw InvalidClaimsError("Activation subject cannot be empty");
     }
-    // The grantee is an account public key, or the literal "public".
-    if (impl_->subject_ != "public" && !nkeys::IsValidPublicAccountKey(impl_->subject_)) {
-        throw InvalidClaimsError(
-            "Activation subject must be an account public key or \"public\"");
-    }
-    if (impl_->importSubject_.empty()) {
-        throw InvalidClaimsError("Activation import subject cannot be empty");
-    }
-    if (impl_->importType_ != ExportType::Stream && impl_->importType_ != ExportType::Service) {
-        throw InvalidClaimsError("Activation import type must be stream or service");
-    }
+    // Go's Encode: the grantee must be an account key (its own test refuses
+    // the literal "public"); import subject/kind are Go's ADVISORY rules and
+    // live in validate(vr) so Go-mintable tokens stay decodable.
+    internal::checkSubjectKind(impl_->subject_, 'A', "Activation");
     internal::checkIssuerKind(impl_->issuer_, "AO", "Activation");
 }
 

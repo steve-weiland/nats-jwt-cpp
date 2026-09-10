@@ -57,9 +57,11 @@ inline void userPermissionLimitsFromJson(const nlohmann::json& j, Permissions& p
         perms.resp = ResponsePermission{
             static_cast<int>(intField(*o, "max", 0)), intField(*o, "ttl", 0)};
     }
-    limits.subs = intField(j, "subs", 0);
-    limits.data = intField(j, "data", 0);
-    limits.payload = intField(j, "payload", 0);
+    // Go's SigningKeys.UnmarshalJSON starts from NewUserScope(): NatsLimits
+    // preset to NoLimit — an absent template limit means UNLIMITED
+    limits.subs = intField(j, "subs", -1);
+    limits.data = intField(j, "data", -1);
+    limits.payload = intField(j, "payload", -1);
     if (const auto* a = arrayField(j, "src")) limits.src = a->get<std::vector<std::string>>();
     if (const auto* a = arrayField(j, "times"))
         for (const auto& tr : *a)

@@ -2135,3 +2135,78 @@ TEST(DecodeHardeningTest, IssuerKindIsEnforcedAtDecodeForEveryType) {
     EXPECT_THROW((void)fake.encode(okp->seedString()), jwt::InvalidClaimsError);
     EXPECT_THROW((void)jwt::decodeOperatorClaims(tok(*okp, "Ogarbage", R"({"type":"operator","version":2})")), jwt::InvalidClaimsError);
 }
+
+// ============================================================================
+// Re-sign safety + activation decode rules (review 2026-09-09, R4/R5).
+// ============================================================================
+
+TEST(ResignSafetyTest, DefaultPermissionsRespSurvivesReEncode) {
+    // Go: DefaultPermissions has Resp (omitempty); measured to round-trip in Go
+    auto okp = nkeys::CreateOperator(); auto akp = nkeys::CreateAccount();
+    const std::string p = R"({"iss":")" + okp->publicString() + R"(","sub":")" + akp->publicString() + R"(","jti":"x","iat":1,"nats":{"type":"account","version":2,"default_permissions":{"pub":{},"sub":{},"resp":{"max":5,"ttl":1000000000}}}})";
+    auto acc = jwt::decodeAccountClaims(mintWithHeader(V2_HEADER, p, *okp, false));
+    ASSERT_TRUE(acc->defaultPermissions().resp.has_value());
+    EXPECT_EQ(acc->defaultPermissions().resp->maxMsgs, 5);
+    EXPECT_EQ(acc->defaultPermissions().resp->ttlNanos, 1000000000);
+    auto re = natsObjectOf(acc->encode(okp->seedString()));
+    EXPECT_EQ(re.at("default_permissions").at("resp"), (nlohmann::json{{"max", 5}, {"ttl", 1000000000}}));
+    // and a fresh account without resp omits it
+    jwt::AccountClaims fresh(akp->publicString());
+    EXPECT_FALSE(natsObjectOf(fresh.encode(okp->seedString())).at("default_permissions").contains("resp"));
+}
+
+TEST(ResignSafetyTest, FlatJetStreamIsZeroedWhenTieredLimitsExist) {
+    // Go's loadAccount zeroes JetStreamLimits when tiered limits are present
+    // (decoder_account.go:48-50), so the mutual-exclusion rule never fires
+    // post-decode and the token re-signs. Measured: Go decodes mem_storage=0.
+    auto okp = nkeys::CreateOperator(); auto akp = nkeys::CreateAccount();
+    const std::string p = R"({"iss":")" + okp->publicString() + R"(","sub":")" + akp->publicString() + R"(","jti":"x","iat":1,"nats":{"type":"account","version":2,"limits":{"subs":-1,"data":-1,"payload":-1,"imports":-1,"exports":-1,"wildcards":true,"conn":-1,"leaf":-1,"mem_storage":1048576,"tiered_limits":{"R1":{"mem_storage":2048}}}}})";
+    auto acc = jwt::decodeAccountClaims(mintWithHeader(V2_HEADER, p, *okp, false));
+    EXPECT_EQ(acc->limits().jetStream, jwt::JetStreamLimits{});
+    EXPECT_EQ(acc->limits().tieredLimits.at("R1").memStorage, 2048);
+    jwt::ValidationResults vr;
+    acc->validate(vr);
+    EXPECT_TRUE(vr.isEmpty()) << (vr.issues().empty() ? "" : vr.issues()[0].description);
+    EXPECT_NO_THROW((void)acc->encode(okp->seedString()));
+}
+
+TEST(ResignSafetyTest, ScopeTemplateLimitsDefaultToUnlimitedLikeGo) {
+    // Go's SigningKeys.UnmarshalJSON starts from NewUserScope() → NatsLimits
+    // preset to -1; an absent subs/data/payload in a template means UNLIMITED
+    auto okp = nkeys::CreateOperator(); auto akp = nkeys::CreateAccount();
+    auto sk = nkeys::CreateAccount()->publicString();
+    const std::string p = R"({"iss":")" + okp->publicString() + R"(","sub":")" + akp->publicString() + R"(","jti":"x","iat":1,"nats":{"type":"account","version":2,"signing_keys":[{"kind":"user_scope","key":")" + sk + R"(","role":"r","template":{"pub":{},"sub":{}},"description":""}]}})";
+    auto acc = jwt::decodeAccountClaims(mintWithHeader(V2_HEADER, p, *okp, false));
+    auto scope = acc->getScope(sk);
+    ASSERT_TRUE(scope.has_value());
+    EXPECT_EQ(scope->limits.subs, -1);
+    EXPECT_EQ(scope->limits.data, -1);
+    EXPECT_EQ(scope->limits.payload, -1);
+    // a fresh UserScope carries the same defaults, and the wire omits nothing Go emits
+    jwt::UserScope fresh;
+    EXPECT_EQ(fresh.limits.subs, -1);
+}
+
+TEST(ActivationDecodeTest, GoMintableAdvisoryFailuresDecodeAndReport) {
+    // Go's Encode does not validate: an activation without a kind, or with an
+    // empty import subject, is mintable in Go and reported by Validate —
+    // decode must not throw (the #6 lesson), the report must carry the issue
+    auto akp = nkeys::CreateAccount(); auto bkp = nkeys::CreateAccount();
+    auto tok = [&](const std::string& nats) {
+        return mintWithHeader(V2_HEADER, R"({"iss":")" + akp->publicString() + R"(","sub":")" + bkp->publicString() + R"(","jti":"x","iat":1,"nats":)" + nats + "}", *akp, false);
+    };
+    auto noKind = jwt::decodeActivationClaims(tok(R"({"type":"activation","version":2,"subject":"billing.charge"})"));
+    jwt::ValidationResults vr;
+    noKind->validate(vr);
+    EXPECT_EQ(vr.errors(), (std::vector<std::string>{R"(invalid import type: "unknown")"}));
+    auto noSubject = jwt::decodeActivationClaims(tok(R"({"type":"activation","version":2,"kind":"service"})"));
+    jwt::ValidationResults vr2;
+    noSubject->validate(vr2);
+    EXPECT_EQ(vr2.errors(), (std::vector<std::string>{"subject cannot be empty"}));
+    EXPECT_THROW((void)noSubject->encode(akp->seedString()), jwt::InvalidClaimsError);  // we still refuse to re-mint
+    // the literal "public" grantee: Go's Encode refuses it (TestPublicIsNotValid)
+    jwt::ActivationClaims pub("public");
+    pub.setImportSubject("s");
+    pub.setImportType(jwt::ExportType::Service);
+    EXPECT_THROW((void)pub.encode(akp->seedString()), jwt::InvalidClaimsError);
+}

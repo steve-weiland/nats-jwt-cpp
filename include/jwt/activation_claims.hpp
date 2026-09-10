@@ -7,8 +7,8 @@ namespace jwt {
 
 /// Activation claims (Go: ActivationClaims) — the signed grant an exporting
 /// account hands an importer for a PRIVATE (token_req) export. The claim's
-/// SUBJECT is the grantee account's public key (or "public"); the nats object
-/// carries the import subject and kind.
+/// SUBJECT is the grantee account's public key; the nats object carries the
+/// import subject and kind.
 class ActivationClaims : public Claims {
 public:
     explicit ActivationClaims(const std::string& granteeAccountPublicKey);
