@@ -155,46 +155,17 @@ std::unique_ptr<ActivationClaims> decodeActivationClaims(const std::string& jwt)
     using namespace internal;
     using json = nlohmann::json;
 
-    auto parts = parseJwt(jwt);
-    auto header_bytes = base64url_decode(parts.header_b64);
-    std::string header_json(header_bytes.begin(), header_bytes.end());
-    json header;
-    try {
-        header = json::parse(header_json);
-    } catch (const json::exception& e) {
-        throw MalformedTokenError(std::string("Invalid JWT header JSON: ") + e.what());
-    }
-    if (!header.contains("alg") || header["alg"] != JWT_ALGORITHM) {
-        throw InvalidClaimsError(
-            "Unsupported algorithm: expected '" + std::string(JWT_ALGORITHM) + "'");
-    }
-
-    auto payload_bytes = base64url_decode(parts.payload_b64);
-    std::string payload_json(payload_bytes.begin(), payload_bytes.end());
-    json payload;
-    try {
-        payload = json::parse(payload_json);
-    } catch (const json::exception& e) {
-        throw MalformedTokenError(std::string("Invalid JWT payload JSON: ") + e.what());
-    }
-
-    if (!payload.contains("nats")) {
-        throw InvalidClaimsError("Missing 'nats' object in JWT payload");
-    }
+    // Go's Decode: header validity, payload-derived version, per-version
+    // signature rule, v1 → v2 migration — shared in decodeEnvelope.
+    auto env = decodeEnvelope(jwt);
+    const json& payload = env.payload;
     auto nats = payload["nats"];
     if (!nats.contains("type") || nats["type"] != "activation") {
         throw InvalidClaimsError("JWT type mismatch: expected 'activation'");
     }
-    if (!nats.contains("version") || nats["version"] != JWT_VERSION) {
-        throw InvalidClaimsError("Unsupported JWT version");
-    }
 
     std::string subject = payload.at("sub").get<std::string>();
     std::string issuer = payload.at("iss").get<std::string>();
-
-    if (!verifySignature(issuer, parts.signing_input, parts.signature_b64)) {
-        throw SignatureError("JWT signature verification failed");
-    }
 
     auto claims = std::make_unique<ActivationClaims>(subject);
     claims->impl_->natsRaw_ = nats;

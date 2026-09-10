@@ -9,6 +9,8 @@
 //   encode <dir>              writes op/acc/user.jwt + u.creds (direct issuance)
 //   encode-signer <dir>       the same files minted through encodeWithSigner —
 //                             an external-signer callback holds the keys
+//   migrate <type> <in> <out> <seed>   decode (v1 or v2) and re-encode as v2 with seed
+//   mintgeneric <dir>         a custom-type GenericClaims token
 //   genfields <dir>           operator/account/user/activation carrying
 //                             aud + nbf + tags (added Go-TagList-style)
 //   genauth <dir>             auth-callout artifacts: account with
@@ -54,6 +56,28 @@ int main([[maybe_unused]] int argc, char** argv) try {
         else if (type == "authorization_request") { auto c = jwt::decodeAuthorizationRequestClaims(tok); std::cout << "CPP-DECODE-OK sub=" << c->subject() << "\n"; }
         else if (type == "authorization_response") { auto c = jwt::decodeAuthorizationResponseClaims(tok); std::cout << "CPP-DECODE-OK sub=" << c->subject() << "\n"; }
         else if (type == "user") { auto c = jwt::decodeUserClaims(tok); std::cout << "CPP-DECODE-OK sub=" << c->subject() << "\n"; }
+        else if (type == "generic") {
+            auto c = jwt::decodeGeneric(tok);
+            // the driver has no JSON engine (public API is string-only): pull the
+            // top-level keys with a small scan good enough for our flat fixtures
+            std::vector<std::string> keys;
+            std::string d = c->dataJson();
+            int depth = 0;
+            for (std::size_t i = 0; i < d.size(); ++i) {
+                if (d[i] == '{' || d[i] == '[') ++depth;
+                else if (d[i] == '}' || d[i] == ']') --depth;
+                else if (d[i] == '"' && depth == 1) {
+                    auto e = d.find('"', i + 1);
+                    if (e != std::string::npos && e + 1 < d.size() && d[e + 1] == ':') keys.push_back(d.substr(i + 1, e - i - 1));
+                    // skip the whole string (value or key)
+                    i = e;
+                }
+            }
+            std::sort(keys.begin(), keys.end());
+            std::cout << "CPP-DECODE-OK claimtype=" << c->claimType() << " sub=" << c->subject() << " data=[";
+            for (std::size_t i = 0; i < keys.size(); ++i) std::cout << (i ? " " : "") << keys[i];
+            std::cout << "]\n";
+        }
         else { std::cerr << "ERR: unknown claim type " << type << "\n"; return 2; }
     } else if (mode == "validate") {
         auto c = jwt::decode(slurp(argv[2]));
@@ -308,6 +332,20 @@ int main([[maybe_unused]] int argc, char** argv) try {
         uc.setProxyRequired(true);
         uc.allowedConnectionTypes() = {jwt::ConnectionType::Websocket, jwt::ConnectionType::Mqtt};
         std::ofstream(dir + "/rich-user.jwt") << uc.encode(akp->seedString());
+        std::cout << "OK\n";
+    } else if (mode == "migrate") { // type in out seed → decode (v1 or v2), re-encode v2
+        std::string type = argv[2], tok = slurp(argv[3]), out = argv[4], seed = slurp(argv[5]);
+        auto c = jwt::decode(tok);
+        std::ofstream(out) << c->encode(seed);
+        std::cout << "OK\n";
+    } else if (mode == "mintgeneric") { // dir → custom-type generic token
+        std::string dir = argv[2];
+        auto ukp = nkeys::CreateUser();
+        jwt::GenericClaims gc(ukp->publicString());
+        gc.setName("custom");
+        gc.setAudience("aud-g");
+        gc.setDataJson(R"({"type":"my-custom-claim","hello":"world","n":42})");
+        std::ofstream(dir + "/generic.jwt") << gc.encode(ukp->seedString());
         std::cout << "OK\n";
     } else if (mode == "genfields") { // dir → the four legacy types with aud/nbf/tags
         std::string dir = argv[2];

@@ -14,47 +14,12 @@ namespace {
     // Shared decode preamble: parse, check header alg, parse payload, check
     // nats.type/version, verify the signature against the embedded issuer.
     json decodePayloadOfType(const std::string& token, const char* type) {
-        using namespace internal;
-        auto parts = parseJwt(token);
-        auto header_bytes = base64url_decode(parts.header_b64);
-        json header;
-        try {
-            header = json::parse(std::string(header_bytes.begin(), header_bytes.end()));
-        } catch (const json::exception& e) {
-            throw MalformedTokenError(std::string("Invalid JWT header JSON: ") + e.what());
-        }
-        if (!header.contains("alg") || header["alg"] != JWT_ALGORITHM) {
-            throw InvalidClaimsError(
-                "Unsupported algorithm: expected '" + std::string(JWT_ALGORITHM) + "'");
-        }
-        auto payload_bytes = base64url_decode(parts.payload_b64);
-        json payload;
-        try {
-            payload = json::parse(std::string(payload_bytes.begin(), payload_bytes.end()));
-        } catch (const json::exception& e) {
-            throw MalformedTokenError(std::string("Invalid JWT payload JSON: ") + e.what());
-        }
-        if (!payload.contains("nats") || !payload["nats"].is_object()) {
-            throw InvalidClaimsError("Missing 'nats' object in JWT payload");
-        }
-        const auto& nats = payload["nats"];
-        if (!nats.contains("type") || nats["type"] != type) {
+        auto env = internal::decodeEnvelope(token);
+        const auto& nats = env.payload["nats"];
+        if (!nats.is_object() || !nats.contains("type") || nats["type"] != type) {
             throw InvalidClaimsError(std::string("JWT type mismatch: expected '") + type + "'");
         }
-        if (!nats.contains("version") || nats["version"] != JWT_VERSION) {
-            throw InvalidClaimsError("Unsupported JWT version");
-        }
-        try {
-            const std::string issuer = payload.at("iss").get<std::string>();
-            (void)payload.at("sub").get<std::string>();
-            (void)payload.at("iat").get<std::int64_t>();
-            if (!verifySignature(issuer, parts.signing_input, parts.signature_b64)) {
-                throw SignatureError("JWT signature verification failed");
-            }
-        } catch (const json::exception& e) {
-            throw MalformedTokenError(std::string("Invalid JWT payload: ") + e.what());
-        }
-        return payload;
+        return env.payload;
     }
 
     void putIfSet(json& o, const char* key, const std::string& v) {

@@ -652,40 +652,11 @@ std::unique_ptr<AccountClaims> decodeAccountClaims(const std::string& jwt) {
     using json = nlohmann::json;
 
     // Parse JWT into its three components
-    auto parts = parseJwt(jwt);
-
-    // Decode and validate header
-    auto header_bytes = base64url_decode(parts.header_b64);
-    std::string header_json(header_bytes.begin(), header_bytes.end());
-    json header;
-    try {
-        header = json::parse(header_json);
-    } catch (const json::exception& e) {
-        throw MalformedTokenError(std::string("Invalid JWT header JSON: ") + e.what());
-    }
-
-    if (!header.contains("alg") || header["alg"] != JWT_ALGORITHM) {
-        throw InvalidClaimsError(
-            "Unsupported algorithm: expected '" + std::string(JWT_ALGORITHM) + "'"
-        );
-    }
-
-    // Decode and parse payload
-    auto payload_bytes = base64url_decode(parts.payload_b64);
-    std::string payload_json(payload_bytes.begin(), payload_bytes.end());
-    json payload;
-    try {
-        payload = json::parse(payload_json);
-    } catch (const json::exception& e) {
-        throw MalformedTokenError(std::string("Invalid JWT payload JSON: ") + e.what());
-    }
-
-    // Validate NATS-specific claims
-    if (!payload.contains("nats")) {
-        throw InvalidClaimsError("Missing 'nats' object in JWT payload");
-    }
+    // Go's Decode: header validity, payload-derived version, per-version
+    // signature rule, v1 → v2 migration — shared in decodeEnvelope.
+    auto env = decodeEnvelope(jwt);
+    const json& payload = env.payload;
     auto nats = payload["nats"];
-
     if (!nats.contains("type") || nats["type"] != "account") {
         throw InvalidClaimsError(
             "JWT type mismatch: expected 'account', got '" +
@@ -693,22 +664,8 @@ std::unique_ptr<AccountClaims> decodeAccountClaims(const std::string& jwt) {
         );
     }
 
-    if (!nats.contains("version") || nats["version"] != JWT_VERSION) {
-        throw InvalidClaimsError(
-            "Unsupported JWT version: expected " + std::to_string(JWT_VERSION)
-        );
-    }
-
-    // Extract required fields
     std::string subject = payload.at("sub").get<std::string>();
     std::string issuer = payload.at("iss").get<std::string>();
-
-    // Decode is AUTHENTICATED, as in Go: the signature over header.payload
-    // must verify against the embedded issuer, or the claims never reach the
-    // caller (an unauthenticated decode hands out attacker-edited claims).
-    if (!verifySignature(issuer, parts.signing_input, parts.signature_b64)) {
-        throw SignatureError("JWT signature verification failed");
-    }
     std::int64_t iat = payload.at("iat").get<std::int64_t>();
 
     // Create AccountClaims object

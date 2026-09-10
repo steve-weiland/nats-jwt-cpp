@@ -32,8 +32,15 @@ real nats-server in CI — encode/decode/verify, timing + chain validation,
 creds generation AND parsing (`parseDecoratedJWT`/`parseDecoratedNKey`/
 `parseDecoratedUserNKey`, plus `decorateJWT`/`decorateSeed`, byte-identical to
 Go). Un-ported fields survive decode→re-encode untouched. NOT ported (by
-choice): v1 token reading, generic claims, activation hashID,
-xkey-encrypted callout traffic. Validation reports ARE ported: every claim
+choice): activation hashID, xkey-encrypted callout traffic. v1 tokens ARE
+read (Go's migration: payload-only signature, top-level type/tags/
+issuer_account moved into `nats`, v1-only limit fields dropped) and
+re-encode as v2, like Go — Go's own v1compat-minted goldens are the gate.
+`GenericClaims` / `decodeGeneric` read any claim type (data crosses the API
+as JSON text — this library keeps its JSON engine private); `decode()`
+returns one for unknown types, which is MORE than Go manages: Go's `Decode`
+fails on Go's own v2 generics (measured — its unknown-type branch applies the
+v1 signature rule), only Go's `DecodeGeneric` works. Validation reports ARE ported: every claim
 type has Go's accumulating `validate(ValidationResults&)` (blocking errors,
 warnings, exp/nbf time checks, Go's texts verbatim) — the throwing
 `validate()` sits on top of it and encode enforces blocking issues, while

@@ -3,6 +3,7 @@
 #include <nkeys/nkeys.hpp>
 #include <chrono>
 #include <sstream>
+#include <cctype>
 
 namespace jwt {
 
@@ -44,6 +45,9 @@ std::string decorateJWT(const std::string& jwt) {
         kind = "AUTHORIZATION_REQUEST";   // Go: strings.ToUpper(claim type)
     } else if (dynamic_cast<const AuthorizationResponseClaims*>(claims.get())) {
         kind = "AUTHORIZATION_RESPONSE";
+    } else if (const auto* g = dynamic_cast<const GenericClaims*>(claims.get())) {
+        kind = g->claimType();  // Go: ToUpper(claim type) — "generic" for unknown types
+        for (auto& c : kind) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     } else {
         kind = "USER";
     }

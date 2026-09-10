@@ -4,6 +4,7 @@
 #include "jwt/user_claims.hpp"
 #include "jwt/activation_claims.hpp"
 #include "jwt/authorization_claims.hpp"
+#include "jwt/generic_claims.hpp"
 #include "base64url.hpp"
 #include "jwt_utils.hpp"
 #include <nlohmann/json.hpp>
@@ -26,31 +27,26 @@ std::unique_ptr<Claims> decode(const std::string& jwt) {
         throw MalformedTokenError(std::string("Invalid JWT payload JSON: ") + e.what());
     }
 
-    if (!payload.contains("nats")) {
-        throw InvalidClaimsError("Missing 'nats' object in JWT payload");
+    // Go's identifier: a top-level type marks the v1 layout, else nats.type.
+    // Unknown types decode as GenericClaims (Go: loadClaims' default);
+    // cluster/server are refused by Go and by us.
+    std::string type;
+    if (payload.contains("type") && payload["type"].is_string()) {
+        type = payload["type"].get<std::string>();
+    } else if (payload.contains("nats") && payload["nats"].is_object() &&
+               payload["nats"].contains("type") && payload["nats"]["type"].is_string()) {
+        type = payload["nats"]["type"].get<std::string>();
     }
-    auto nats = payload["nats"];
 
-    if (!nats.contains("type")) {
-        throw InvalidClaimsError("Missing 'type' field in nats object");
-    }
-
-    // Dispatch to type-specific decoder
-    if (auto type = nats["type"].get<std::string>(); type == "operator") {
-        return decodeOperatorClaims(jwt);
-    } else if (type == "account") {
-        return decodeAccountClaims(jwt);
-    } else if (type == "user") {
-        return decodeUserClaims(jwt);
-    } else if (type == "activation") {
-        return decodeActivationClaims(jwt);
-    } else if (type == "authorization_request") {
-        return decodeAuthorizationRequestClaims(jwt);
-    } else if (type == "authorization_response") {
-        return decodeAuthorizationResponseClaims(jwt);
-    } else {
-        throw InvalidClaimsError("Unknown JWT type: " + type);
-    }
+    if (type == "operator") return decodeOperatorClaims(jwt);
+    if (type == "account") return decodeAccountClaims(jwt);
+    if (type == "user") return decodeUserClaims(jwt);
+    if (type == "activation") return decodeActivationClaims(jwt);
+    if (type == "authorization_request") return decodeAuthorizationRequestClaims(jwt);
+    if (type == "authorization_response") return decodeAuthorizationResponseClaims(jwt);
+    if (type == "cluster") throw InvalidClaimsError("ClusterClaims are not supported");
+    if (type == "server") throw InvalidClaimsError("ServerClaims are not supported");
+    return decodeGeneric(jwt);
 }
 
 bool verify(const std::string& jwt) {

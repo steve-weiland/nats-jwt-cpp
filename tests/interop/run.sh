@@ -28,6 +28,9 @@
 #  10. aud / nbf / tags: C++-minted tokens of all four legacy types show the
 #      intended values in Go's typed parse (tags normalized Go-TagList-style);
 #      Go's goldens decode in C++
+#  12. v1 + generic: Go's v1compat-minted tokens (alg ed25519, payload-only
+#      signature, top-level type/tags/issuer_account) decode in C++ and
+#      re-encode as v2 tokens Go decodes; generic claims cross both ways
 #  11. validation report: tokens Go can MINT but its own Validate flags
 #      (Go's Encode does not validate) decode in C++ WITHOUT throwing, and the
 #      C++ report equals Go's issue list line-for-line (blocking/time flags +
@@ -175,6 +178,31 @@ $want
 $got"
 done
 check "validation report: C++ decodes Go's flawed tokens and reports Go's issues verbatim"
+
+# 12 ── v1 reading + generic claims, both directions
+mkdir -p "$TMP/v1" "$TMP/gen-cpp"
+"$GO" genv1 "$TMP/v1" >/dev/null
+"$GO" gengeneric "$TMP/v1" >/dev/null
+okseed=$(mktemp); acseed=$(mktemp)
+"$GO" seeds "$okseed" "$acseed" >/dev/null || fail "probe seeds failed"
+for t in operator:"$okseed" account:"$okseed" user:"$acseed" activation:"$acseed"; do
+    name=${t%%:*}; seed=${t##*:}
+    "$CPP" decode "$name" "$TMP/v1/v1-$name.jwt" >/dev/null || fail "C++ rejected Go's v1 $name token"
+    "$CPP" migrate "$name" "$TMP/v1/v1-$name.jwt" "$TMP/v1/v2-$name.jwt" "$seed" >/dev/null || fail "C++ could not re-encode v1 $name"
+    out=$("$GO" validate "$TMP/v1/v2-$name.jwt") || fail "Go rejected the C++ v2 re-encode of v1 $name"
+    printf '%s' "$out" | grep -q "type=$name" || fail "re-encoded $name has the wrong type: $out"
+done
+rm -f "$okseed" "$acseed"
+out=$("$CPP" decode generic "$TMP/v1/generic.jwt") || fail "C++ rejected Go's generic token"
+[ "$out" = "CPP-DECODE-OK claimtype=generic sub=$(printf '%s' "$out" | sed 's/.* sub=\([A-Z0-9]*\).*/\1/') data=[hello n nested type version]" ] \
+    || fail "C++ generic decode unexpected: $out"
+"$CPP" mintgeneric "$TMP/gen-cpp" >/dev/null
+out=$("$GO" generic "$TMP/gen-cpp/generic.jwt") || fail "Go DecodeGeneric rejected the C++ generic token"
+printf '%s' "$out" | grep -q "claimtype=generic .* data=\[hello n type version\]" || fail "Go's view of the C++ generic: $out"
+# (measured: Go's own Decode fails on Go's own v2 generics — its unknown-type
+# branch returns version -1 and applies the v1 signature rule — so Go's
+# working path, DecodeGeneric, is the one gated here)
+check "v1 tokens decode + re-encode as v2 Go accepts; generic claims cross both ways"
 
 echo
 echo "INTEROP PASS ($pass checks)"

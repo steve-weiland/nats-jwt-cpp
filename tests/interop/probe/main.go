@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nats-io/jwt/v2"
+	v1 "github.com/nats-io/jwt/v2/v1compat"
 	"github.com/nats-io/nkeys"
 )
 
@@ -271,6 +272,92 @@ func main() {
 		must(os.WriteFile(dir+"/scoped-user.jwt", []byte(userJWT), 0600))
 		must(os.WriteFile(dir+"/scoped-user.apub", []byte(apk), 0600))
 		fmt.Println("OK")
+	case "seeds": // opfile accfile → fresh operator + account seeds (for the migrate check)
+		okp, _ := nkeys.CreateOperator()
+		os_, _ := okp.Seed()
+		akp, _ := nkeys.CreateAccount()
+		as_, _ := akp.Seed()
+		must(os.WriteFile(os.Args[2], os_, 0600))
+		must(os.WriteFile(os.Args[3], as_, 0600))
+		fmt.Println("OK")
+	case "genv1": // dir → V1 tokens (alg ed25519, payload-only signature, type/tags/issuer_account at top level) via v1compat
+		dir := os.Args[2]
+		okp, _ := nkeys.CreateOperator()
+		opk, _ := okp.PublicKey()
+		oskp, _ := nkeys.CreateOperator()
+		ospk, _ := oskp.PublicKey()
+		akp, _ := nkeys.CreateAccount()
+		apk, _ := akp.PublicKey()
+		askp, _ := nkeys.CreateAccount()
+		aspk, _ := askp.PublicKey()
+		ukp, _ := nkeys.CreateUser()
+		upk, _ := ukp.PublicKey()
+		oc := v1.NewOperatorClaims(opk)
+		oc.Name = "O1"
+		oc.Tags.Add("Legacy", "east")
+		oc.SigningKeys.Add(ospk)
+		oc.AccountServerURL = "https://as.example.com/jwt/v1"
+		opJWT, err := oc.Encode(okp)
+		must(err)
+		ac := v1.NewAccountClaims(apk)
+		ac.Name = "A1"
+		ac.Tags.Add("billing")
+		ac.SigningKeys.Add(aspk)
+		ac.Limits.Conn = 10
+		ac.Limits.Payload = 4096
+		accJWT, err := ac.Encode(okp)
+		must(err)
+		uc := v1.NewUserClaims(upk)
+		uc.Name = "U1"
+		uc.Tags.Add("ops")
+		uc.IssuerAccount = apk // top-level in v1
+		uc.Permissions.Pub.Allow.Add("demo.>")
+		uc.Permissions.Sub.Allow.Add("_INBOX.>", "jobs.* workers")
+		uc.Limits.Max = 1000 // deprecated in v2 — dropped by migration
+		uc.Limits.Payload = 2048
+		uc.Limits.Src = "10.0.0.0/8,192.168.1.0/24" // v1: comma string
+		uc.BearerToken = true
+		userJWT, err := uc.Encode(askp)
+		must(err)
+		act := v1.NewActivationClaims(apk)
+		act.Name = "grant1"
+		act.Tags.Add("x")
+		act.ImportSubject = "billing.charge"
+		act.ImportType = v1.Service // v1 wire key is "type" (v2: "kind")
+		act.Limits.Max = 5
+		actJWT, err := act.Encode(akp)
+		must(err)
+		for name, content := range map[string]string{"v1-operator.jwt": opJWT, "v1-account.jwt": accJWT,
+			"v1-user.jwt": userJWT, "v1-activation.jwt": actJWT} {
+			must(os.WriteFile(dir+"/"+name, []byte(content), 0600))
+		}
+		fmt.Println("OK")
+	case "gengeneric": // dir → a custom-type generic claim (Go: GenericClaims), signed by a user key (no prefix rule)
+		dir := os.Args[2]
+		ukp, _ := nkeys.CreateUser()
+		upk, _ := ukp.PublicKey()
+		gc := jwt.NewGenericClaims(upk)
+		gc.Name = "custom"
+		gc.Audience = "aud-g"
+		gc.Data["type"] = "my-custom-claim"
+		gc.Data["hello"] = "world"
+		gc.Data["n"] = 42
+		gc.Data["nested"] = map[string]interface{}{"k": []string{"a", "b"}}
+		token, err := gc.Encode(ukp)
+		must(err)
+		must(os.WriteFile(dir+"/generic.jwt", []byte(token), 0600))
+		fmt.Println("OK")
+	case "generic": // jwt file → DecodeGeneric: type= and the data keys (sorted)
+		data, err := os.ReadFile(os.Args[2])
+		must(err)
+		gc, err := jwt.DecodeGeneric(strings.TrimSpace(string(data)))
+		must(err)
+		var keys []string
+		for k := range gc.Data {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		fmt.Printf("claimtype=%s sub=%s data=%v\n", gc.ClaimType(), gc.Subject, keys)
 	case "genfields": // dir → operator/account/user/activation carrying aud + nbf + tags (group 6a)
 		dir := os.Args[2]
 		okp, _ := nkeys.CreateOperator()

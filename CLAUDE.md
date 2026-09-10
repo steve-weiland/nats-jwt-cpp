@@ -136,6 +136,9 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
   server refuses a WEBSOCKET-only user over TCP (e2e check 9 — logged as
   "authentication error"; "Connection type not allowed" only at -D).
   Connection-type strings are unvalidated, as in Go.
+- `src/jwt_utils.*` — `decodeEnvelope` (header/version/signature/v1
+  migration, shared by every typed decoder), `signAndAssemble` (the encode
+  tail), `addTimeChecks`/`throwFirstBlocking` (the validation report).
 - `src/base64url.*` — RFC 4648 URL alphabet, no padding.
 - Claim JSON is nlohmann (alphabetical key order — irrelevant to Go, which
   ignores order); header is `{"typ":"JWT","alg":"ed25519-nkey"}`.
@@ -147,8 +150,19 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
 
 ## Known gaps
 
-Scope cuts are documented in the README (v1 reading, generic claims,
-activation hashID, xkey-encrypted callout traffic). `aud`/`nbf`/`tags` are
+Scope cuts are documented in the README (activation hashID, xkey-encrypted
+callout traffic — see fix-plan §7). v1 reading + GenericClaims are ported
+(group 6b): `internal::decodeEnvelope` is the ONE decode preamble (Go's
+Header.Valid leniency — typ case-insensitive, alg lower-cased "ed25519" or
+"ed25519-nkey"; version from the PAYLOAD: a top-level type means v1; v1
+signs the payload chunk only; > 2 is "newer version"; 0 is an error like
+Go's loaders) and migrates v1 into the v2 layout (activation import "type"
+→ "kind", user `max` dropped and subs/data/payload preset to -1). Go's
+DecodeGeneric picks the signature rule from the HEADER alg instead — mirrored
+in decodeGeneric. Measured Go bug, not mirrored: Go's Decode fails on Go's own
+v2 generics (unknown-type branch → version -1 → v1 rule); our decode()
+dispatches unknown types to decodeGeneric. GenericClaims data is JSON TEXT
+on the public API — no public header may include nlohmann (packaging gate). `aud`/`nbf`/`tags` are
 on the Claims base (group 6a). Correction recorded there: the old
 `validateNotBefore` used iat as the not-before bound — Go has a real `nbf`
 and NEVER checks iat; nats-server treats Go's time checks as blocking for
