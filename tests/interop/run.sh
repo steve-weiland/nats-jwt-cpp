@@ -5,7 +5,7 @@
 #
 #   usage: tests/interop/run.sh <cmake-build-dir>
 #
-# Thirteen checks:
+# Fourteen checks:
 #   1. C++-minted operator/account/user JWTs pass Go's authenticated Decode —
 #      minted both from seeds and through encodeWithSigner (external signer)
 #   2. C++-generated .creds parses via Go ParseDecoratedJWT (the armor regex
@@ -37,6 +37,9 @@
 #      re-encode as v2 tokens Go decodes; generic claims cross both ways
 #  13. activation hashID: C++ equals Go's HashID() on Go-minted activations,
 #      wildcard and plain subjects alike
+#  14. xkey-sealed callout: Go (nkeys Seal, as nats-server does) seals a
+#      server-signed request to a C++ curve key → C++ opens, decodes and
+#      cross-checks server_id.xkey; C++ seals a response → Go opens + Decodes
 set -eu
 
 BUILD_DIR=${1:?usage: run.sh <cmake-build-dir>}
@@ -217,6 +220,19 @@ for f in "$TMP/x"/*activation*.jwt "$TMP/v1/v1-activation.jwt" "$REPO/tests/fixt
     [ "$got" = "$want" ] || fail "hashID mismatch on $f: Go $want, C++ $got"
 done
 check "activation hashID equals Go's HashID() on Go-minted activations"
+
+# 14 ── xkey-sealed callout bodies, both directions
+mkdir -p "$TMP/xk"
+"$CPP" xkeys "$TMP/xk" >/dev/null
+"$GO" sealreq "$TMP/xk" "$(cat "$TMP/xk/service-x.pub")" >/dev/null
+out=$("$CPP" openreq "$TMP/xk/sealed-req.bin" "$TMP/xk/server-x.pub" "$TMP/xk/service-x.seed") \
+    || fail "C++ could not open/decode the Go-sealed request"
+printf '%s' "$out" | grep -q "SEALED-REQ-OK .* user=alice" || fail "C++ opened the request but saw: $out"
+"$CPP" sealresp "$TMP/xk" "$TMP/xk/server-x.pub" "$TMP/xk/service-x.seed" "$TMP/xk/user.pub" "$TMP/xk/server.pub" >/dev/null
+out=$("$GO" openresp "$TMP/xk/sealed-resp.bin" "$(cat "$TMP/xk/service-x.pub")" "$TMP/xk/server-x.seed") \
+    || fail "Go could not open the C++-sealed response"
+[ "$out" = "sub=$(cat "$TMP/xk/user.pub") error=nope" ] || fail "Go's view of the C++ sealed response: $out"
+check "xkey-sealed callout: Go-sealed request opens in C++ (xkey cross-checked); C++-sealed response opens in Go"
 
 echo
 echo "INTEROP PASS ($pass checks)"

@@ -188,8 +188,15 @@ docker run --rm -v "$PWD":/src:ro alpine:3.20 sh -c \
 
 ## Known gaps
 
-Scope cuts are documented in the README (activation hashID, xkey-encrypted
-callout traffic — see fix-plan §7). v1 reading + GenericClaims are ported
+The port is complete but for the account trace/cluster_traffic fields
+(README Scope). Encrypted callout (§7a): the request body is a sealed box
+("xkv1") when the account has an xkey; the server's curve key is in the
+`Nats-Server-Xkey` header AND the signed `server_id.xkey` —
+`decodeSealedAuthorizationRequest` requires them to agree. The e2e's callout
+service is `cpp_driver callout-serve`, a real NATS client
+(`tests/interop/nats_min_client.hpp`: INFO/CONNECT with nonce signature,
+SUB, MSG/HMSG with headers, PUB) because `nats reply --command` cannot carry
+a binary body or the header; a production daemon should use nats.c. v1 reading + GenericClaims are ported
 (group 6b): `internal::decodeEnvelope` is the ONE decode preamble (Go's
 Header.Valid leniency — typ case-insensitive, alg lower-cased "ed25519" or
 "ed25519-nkey"; version from the PAYLOAD: a top-level type means v1; v1

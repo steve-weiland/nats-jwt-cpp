@@ -2,6 +2,7 @@
 #include "jwt/claims.hpp"
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -131,6 +132,39 @@ private:
 /// against the embedded server key).
 [[nodiscard]] std::unique_ptr<AuthorizationRequestClaims>
 decodeAuthorizationRequestClaims(const std::string& jwt);
+
+// ---- xkey-encrypted callout traffic (beyond Go's jwt: this is nkeys + server
+// logic there). Measured on nats-server 2.10: when the callout account's
+// `authorization.xkey` is set, the request body is a NaCl sealed box ("xkv1"
+// prefix) from the SERVER's curve key to that xkey; the server's curve public
+// key is in the `Nats-Server-Xkey` header AND in the signed claim
+// (server_id.xkey); the response may be sealed back to it or sent as plain
+// JWT text — the server treats any body not starting with "eyJ" as sealed.
+
+/// The server's rule for "is this body sealed?": it does not start with "eyJ".
+[[nodiscard]] bool isSealedCalloutBody(std::span<const std::uint8_t> body);
+
+/// Open a sealed request body with the service's curve seed ("SX…") and the
+/// server's curve public key ("X…", from the Nats-Server-Xkey header) →
+/// the request JWT text. A body that is not sealed is MalformedTokenError;
+/// a box that does not open is nkeys' DecryptionError (key material).
+[[nodiscard]] std::string openAuthorizationRequest(std::span<const std::uint8_t> sealedBody,
+                                                   std::string_view serverXKey,
+                                                   std::string_view serviceCurveSeed);
+
+/// openAuthorizationRequest + authenticated decode + the check that makes the
+/// unauthenticated header trustworthy: the SIGNED claim's server_id.xkey must
+/// equal the header key the box was opened with (InvalidClaimsError otherwise).
+[[nodiscard]] std::unique_ptr<AuthorizationRequestClaims>
+decodeSealedAuthorizationRequest(std::span<const std::uint8_t> sealedBody,
+                                 std::string_view serverXKey,
+                                 std::string_view serviceCurveSeed);
+
+/// Seal a response JWT to the server's curve key with the service's curve seed
+/// (the server opens it with its pair + the account's xkey).
+[[nodiscard]] std::vector<std::uint8_t> sealAuthorizationResponse(const std::string& responseJwt,
+                                                                  std::string_view serverXKey,
+                                                                  std::string_view serviceCurveSeed);
 
 /// The callout service's answer (Go: AuthorizationResponseClaims). Issued by
 /// an ACCOUNT key: the callout account itself, or one of its signing keys

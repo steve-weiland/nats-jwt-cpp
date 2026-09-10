@@ -28,18 +28,23 @@
 #      allowed_connection_types=[WEBSOCKET] is refused on a plain TCP
 #      connection (client sees "Authorization Violation", the server logs
 #      "authentication error"); the unrestricted user connects
-#  10. AUTH CALLOUT: account C delegates authentication to a service that
-#      is `nats reply` shelling out to `cpp_driver authcallout` per request
-#      (inside the toolbox image, see Dockerfile). A client presenting the
-#      C++-minted sentinel "alice" is admitted INTO ACCOUNT A by a
-#      C++-minted authorization response (signed by C's signing key, user
-#      JWT issued by A's signing key) and round-trips with A's responder;
-#      sentinel "mallory" is refused by the service; with the service down,
-#      alice is refused too (the server defers to the callout)
-#  11. not-before: a user minted with nbf one hour out is refused (the
+#  10. AUTH CALLOUT: account C delegates authentication to a C++ service
+#      (`cpp_driver callout-serve`, a real NATS client — nats_min_client.hpp —
+#      inside the toolbox image). A client presenting the C++-minted sentinel
+#      "alice" is admitted INTO ACCOUNT A by a C++-minted authorization
+#      response (signed by C's signing key, user JWT issued by A's signing
+#      key) and round-trips with A's responder; sentinel "mallory" is refused
+#      by the service; with the service down, alice is refused too (the
+#      server defers to the callout)
+#  11. ENCRYPTED AUTH CALLOUT: account CX carries the service's curve key
+#      (authorization.xkey) — the server SEALS every request to it and the
+#      service answers SEALED; alicex is admitted, malloryx refused, and a
+#      service holding the WRONG curve seed cannot open the requests, so
+#      nobody is admitted
+#  12. not-before: a user minted with nbf one hour out is refused (the
 #      server runs Go's Validate with time checks blocking); the same
 #      account's unrestricted user connects
-#  12. negative control: the same connection WITHOUT creds is refused
+#  13. negative control: the same connection WITHOUT creds is refused
 #      (proves the server is actually enforcing the operator-mode auth our
 #      chain is supposed to satisfy — without this, check 2 could pass
 #      against an open server)
@@ -62,7 +67,7 @@ REPO=$(CDPATH= cd -- "$HERE/../.." && pwd)
 
 WORK=$(mktemp -d)
 cleanup() {
-    docker rm -f "$SRV" "$SRV-resp" "$SRV-hold" "$SRV-rev" "$SRV-billing" "$SRV-callout" >/dev/null 2>&1 || true
+    docker rm -f "$SRV" "$SRV-resp" "$SRV-hold" "$SRV-rev" "$SRV-billing" "$SRV-callout" "$SRV-calloutx" >/dev/null 2>&1 || true
     docker network rm "$NET" >/dev/null 2>&1 || true
     rm -rf "$WORK"
 }
@@ -239,18 +244,17 @@ docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
     || fail "unrestricted user could not connect over the same path"
 check "CONNECTION TYPE enforced: WEBSOCKET-only user refused over plain TCP"
 
-# 10 ── AUTH CALLOUT: the service is `nats reply` (toolbox image) shelling
-# out to cpp_driver per request — every decision below is a C++-minted
-# authorization response answering a nats-server-minted request
+# 10 ── AUTH CALLOUT: the service is cpp_driver itself, a real NATS client
+# (toolbox image) — every decision below is a C++-minted authorization
+# response answering a nats-server-minted request
 docker rm -f "$SRV-callout" >/dev/null 2>&1 || true
 docker run -d --name "$SRV-callout" --network "$NET" -v "$WORK":/w:ro "$TOOLBOX_IMG" \
-    nats --server nats://"$SRV":4222 --creds /w/callout.creds \
-    reply '$SYS.REQ.USER.AUTH' --command "cpp_driver authcallout /w" >/dev/null
+    cpp_driver callout-serve nats://"$SRV":4222 /w c >/dev/null
 docker rm -f "$SRV-resp" >/dev/null 2>&1 || true
 docker run -d --name "$SRV-resp" --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" sh -c "
     nats --server nats://$SRV:4222 --creds /w/u.creds reply demo.svc pong --count 4 &
     sleep 40" >/dev/null
-wait_ready "$SRV-callout" "Listening on" 1
+wait_ready "$SRV-callout" "callout-serve: listening" 1
 wait_ready "$SRV-resp" "Listening on" 1
 # alice: sentinel of C, admitted into A by the callout → reaches A's responder
 out=$(docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
@@ -275,7 +279,44 @@ if docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
 fi
 check "AUTH CALLOUT: C++-minted response admits alice into A, refuses mallory; no service → nobody"
 
-# 11 ── NOT-BEFORE enforced: the nbf user's JWT is valid in an hour, not now
+# 11 ── ENCRYPTED AUTH CALLOUT: account CX advertises the service's curve
+# key; the server seals requests to it (Nats-Server-Xkey header) and the
+# C++ service answers sealed. Measured on 2.10: both directions accepted.
+docker run -d --name "$SRV-calloutx" --network "$NET" -v "$WORK":/w:ro "$TOOLBOX_IMG" \
+    cpp_driver callout-serve nats://"$SRV":4222 /w cx >/dev/null
+docker run -d --name "$SRV-resp" --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" sh -c "
+    nats --server nats://$SRV:4222 --creds /w/u.creds reply demo.svc pong --count 4 &
+    sleep 40" >/dev/null
+wait_ready "$SRV-calloutx" "callout-serve: listening" 1
+wait_ready "$SRV-resp" "Listening on" 1
+out=$(docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+    nats --server nats://"$SRV":4222 --creds /w/alicex.creds request demo.svc ping --timeout 5s 2>&1 || true)
+printf '%s' "$out" | grep -q "pong" || {
+    docker logs "$SRV-calloutx" 2>&1 | tail -5 >&2
+    docker logs "$SRV" 2>&1 | grep -i "callout\|violation" | tail -5 >&2
+    fail "alicex was not admitted through the ENCRYPTED callout: $out"; }
+docker logs "$SRV-calloutx" 2>&1 | grep -q "answered SEALED" || fail "the service did not answer sealed"
+if docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+        nats --server nats://"$SRV":4222 --creds /w/malloryx.creds rtt >/dev/null 2>&1; then
+    fail "malloryx was admitted through the encrypted callout"
+fi
+docker logs "$SRV" 2>&1 | grep -q 'Auth callout service returned an error: sentinel "malloryx" is not authorized' \
+    || fail "server log lacks the (decrypted) callout-error evidence for malloryx"
+# negative control: a service with the WRONG curve seed cannot open the
+# sealed requests → it never answers → the server refuses alicex
+docker rm -f "$SRV-calloutx" >/dev/null 2>&1 || true
+docker run -d --name "$SRV-calloutx" --network "$NET" -v "$WORK":/w:ro "$TOOLBOX_IMG" \
+    cpp_driver callout-serve nats://"$SRV":4222 /w cx wrong-xkey >/dev/null
+wait_ready "$SRV-calloutx" "WRONG xkey" 1
+if docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+        nats --server nats://"$SRV":4222 --creds /w/alicex.creds rtt >/dev/null 2>&1; then
+    fail "alicex was admitted although the service could not decrypt the request"
+fi
+docker logs "$SRV-calloutx" 2>&1 | grep -q "could not answer" || fail "wrong-key service log lacks the open failure"
+docker rm -f "$SRV-calloutx" "$SRV-resp" >/dev/null 2>&1 || true
+check "ENCRYPTED AUTH CALLOUT: sealed request → sealed C++ response admits alicex, refuses malloryx; wrong key → nobody"
+
+# 12 ── NOT-BEFORE enforced: the nbf user's JWT is valid in an hour, not now
 autherr_before=$(docker logs "$SRV" 2>&1 | grep -c "authentication error" || true)
 if docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
         nats --server nats://"$SRV":4222 --creds /w/n.creds rtt >/dev/null 2>&1; then
@@ -288,7 +329,7 @@ docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
     || fail "unrestricted user could not connect alongside the nbf check"
 check "NOT-BEFORE enforced: future-nbf user refused, unrestricted user fine"
 
-# 12 ── negative control: no creds → refused
+# 13 ── negative control: no creds → refused
 if docker run --rm --network "$NET" "$BOX_IMG" \
         nats --server nats://"$SRV":4222 rtt >/dev/null 2>&1; then
     fail "server accepted a connection WITHOUT credentials — auth not enforced"

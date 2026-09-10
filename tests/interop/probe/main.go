@@ -599,6 +599,44 @@ func main() {
 			must(os.WriteFile(dir+"/"+name, []byte(content), 0600))
 		}
 		fmt.Println("OK")
+	case "sealreq": // dir serviceXpub → a server-signed request SEALED (Go nkeys) to the service's curve key, like nats-server
+		dir, servicePub := os.Args[2], os.Args[3]
+		skp, _ := nkeys.CreateServer()
+		spk, _ := skp.PublicKey()
+		sxkp, _ := nkeys.CreateCurveKeys()
+		sxpub, _ := sxkp.PublicKey()
+		sxseed, _ := sxkp.Seed()
+		akp, _ := nkeys.CreateAccount()
+		apk, _ := akp.PublicKey()
+		ukp, _ := nkeys.CreateUser()
+		upk, _ := ukp.PublicKey()
+		rq := jwt.NewAuthorizationRequestClaims(apk)
+		rq.Audience = "nats-authorization-request"
+		rq.UserNkey = upk
+		rq.Server = jwt.ServerID{Name: "srv", Host: "0.0.0.0", ID: spk, Version: "2.10.29", XKey: sxpub}
+		rq.ConnectOptions = jwt.ConnectOptions{Username: "alice", Password: "secret", Protocol: 1}
+		reqJWT, err := rq.Encode(skp)
+		must(err)
+		sealed, err := sxkp.Seal([]byte(reqJWT), servicePub)
+		must(err)
+		must(os.WriteFile(dir+"/sealed-req.bin", sealed, 0600))
+		must(os.WriteFile(dir+"/server-x.pub", []byte(sxpub), 0600))
+		must(os.WriteFile(dir+"/server-x.seed", sxseed, 0600))
+		must(os.WriteFile(dir+"/server.pub", []byte(spk), 0600))
+		must(os.WriteFile(dir+"/user.pub", []byte(upk), 0600))
+		fmt.Println("OK")
+	case "openresp": // bodyfile senderXpub serverXseedfile → open a sealed response like nats-server, Decode it, print sub= and error=
+		body, err := os.ReadFile(os.Args[2])
+		must(err)
+		seed, err := os.ReadFile(os.Args[4])
+		must(err)
+		sxkp, err := nkeys.FromCurveSeed(seed)
+		must(err)
+		plain, err := sxkp.Open(body, os.Args[3])
+		must(err)
+		rc, err := jwt.DecodeAuthorizationResponseClaims(string(plain))
+		must(err)
+		fmt.Printf("sub=%s error=%s\n", rc.Subject, rc.Error)
 	case "hashid": // activation jwt file → Go's HashID()
 		data, err := os.ReadFile(os.Args[2])
 		must(err)

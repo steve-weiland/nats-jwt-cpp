@@ -94,8 +94,20 @@ enforces the server's structural rules at encode (sub = a user key, aud = a
 server key, exactly one of jwt/error, issuer_account an account key, account
 issuer); binding the response to the *right* request — `sub` = the request's
 `userNkey()`, `aud` = the request's `server().id` — is the service's job, and
-nats-server refuses anything else. xkey-encrypted callout traffic is not
-implemented.
+nats-server refuses anything else.
+
+**Encrypted callout traffic.** Set the callout account's `authorization.xkey`
+to the service's x25519 public key and the server seals every request to it
+(a NaCl box from the server's curve key; the service opens it with
+`decodeSealedAuthorizationRequest`), so client credentials in `connect_opts`
+never cross the account in the clear. The server's curve public key arrives
+twice — in the unauthenticated `Nats-Server-Xkey` header and inside the
+signed claim (`server_id.xkey`) — and the library refuses a request whose
+two copies disagree, so a captured request cannot be re-sealed by a third
+party. Seal responses back with `sealAuthorizationResponse`; the server
+accepts sealed or plain (measured). The box authenticates the sender, which
+is why the server skips its issuer check on sealed responses. Protect the
+curve seed like a signing seed: whoever holds it reads every credential.
 
 ### Memory Security
 

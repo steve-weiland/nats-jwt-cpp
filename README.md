@@ -24,8 +24,10 @@ same armor regex real NATS clients use.
 
 ## Scope
 
-This is a deliberate PARTIAL port — what NATS authentication needs, not the
-whole Go surface. Ported: seven claim types (operator, account, user,
+This is now a COMPLETE port of the Go jwt v2 surface (plus a few helpers Go
+keeps elsewhere — see below); the one deliberate omission is the account
+`trace` / `cluster_traffic` fields, carried through re-encode untouched but
+not typed or validated. Ported: seven claim types (operator, account, user,
 activation, authorization request/response, generic) with name/expiry/signing-keys/
 issuer_account, **user permissions (pub/sub allow/deny, response permissions)
 and limits (subs/data/payload, src CIDRs, time windows)** — enforced against a
@@ -33,9 +35,15 @@ real nats-server in CI — encode/decode/verify, timing + chain validation,
 creds generation AND parsing (`parseDecoratedJWT`/`parseDecoratedNKey`/
 `parseDecoratedUserNKey`, plus `decorateJWT`/`decorateSeed`, byte-identical to
 Go). Un-ported fields survive decode→re-encode untouched. NOT ported (by
-choice): xkey-encrypted callout traffic, and the account `trace` /
-`cluster_traffic` fields (carried through re-encode untouched, not typed or
-validated). Activation `hashID()` IS ported (Go's HashID: SHA-256 of
+choice): the account `trace` / `cluster_traffic` fields. xkey-ENCRYPTED
+callout traffic IS supported — `isSealedCalloutBody`,
+`decodeSealedAuthorizationRequest` (open with the service's curve seed +
+the `Nats-Server-Xkey` header key, decode, and require the SIGNED
+`server_id.xkey` to match that header) and `sealAuthorizationResponse`;
+Go's jwt has no such helpers (they are nkeys + server logic there). In CI a
+C++ callout service (a real NATS client, `tests/interop/nats_min_client.hpp`)
+answers sealed requests from a real nats-server with sealed responses, and a
+service holding the wrong curve seed admits nobody. Activation `hashID()` IS ported (Go's HashID: SHA-256 of
 issuer.grantee.subject-up-to-the-first-wildcard, padded standard base32 —
 the key nsc and the account server file activations under; byte-equal to Go
 on Go-minted activations in CI). Go's validation rules are ported in full for accounts,
@@ -159,6 +167,14 @@ if (rq->connectOptions().password == "secret") {
     rs.setError("bad credentials");
 }
 std::string response_jwt = rs.encode(callout_account_seed);      // account key (or signing key + setIssuerAccount)
+
+// Encrypted auth callout (account authorization.xkey set): the body is a
+// sealed box, the server's curve key is in the Nats-Server-Xkey header
+if (jwt::isSealedCalloutBody(body)) {
+    auto rq = jwt::decodeSealedAuthorizationRequest(body, header_xkey, service_curve_seed);
+    // ... decide as above, then:
+    auto sealed = jwt::sealAuthorizationResponse(response_jwt, header_xkey, service_curve_seed);
+}
 
 // Key custody elsewhere (HSM/KMS): sign through a callback — only the PUBLIC
 // key is passed in; it becomes `iss` and the signature is checked against it

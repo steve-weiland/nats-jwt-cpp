@@ -2387,3 +2387,64 @@ TEST(ActivationHashIDTest, RequiresIssuerGranteeAndSubjectLikeGo) {
     a.setImportSubject("other.*");
     EXPECT_NE(jwt::decodeActivationClaims(a.encode(akp->seedString()))->hashID(), h1);
 }
+
+// ============================================================================
+// xkey-encrypted auth callout (fix-plan §7a). Measured on nats-server 2.10.29:
+// with `authorization.xkey` set, the request body is a NaCl sealed box
+// ("xkv1" prefix) sealed by the SERVER's curve key to the account's xkey, the
+// server's curve public key rides in the `Nats-Server-Xkey` header AND in the
+// signed claim (server_id.xkey), and the server accepts the response either
+// sealed back to that key or as plain JWT text (a body not starting "eyJ" is
+// treated as sealed). Go's jwt has no seal/open helpers — these are ours.
+// ============================================================================
+
+TEST(SealedCalloutTest, OpenDecodeSealAgainstAServerSideCurvePair) {
+    auto serverSign = nkeys::CreateServer();
+    auto serverX = nkeys::CreateCurveKeys();   // s.xkp
+    auto serviceX = nkeys::CreateCurveKeys();  // the account's authorization.xkey
+    auto ckp = nkeys::CreateAccount(); auto ukp = nkeys::CreateUser();
+    jwt::AuthorizationRequestClaims rq(ckp->publicString());
+    rq.setAudience(jwt::AuthRequestAudience);
+    rq.setUserNkey(ukp->publicString());
+    rq.server() = jwt::ServerID{"srv", "0.0.0.0", serverSign->publicString(), "2.10.29", "", {}, serverX->publicString()};
+    const std::string reqJwt = rq.encode(serverSign->seedString());
+    // the server: xkp.Seal(req, accountXKey)
+    auto body = serverX->seal(std::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(reqJwt.data()), reqJwt.size()), serviceX->publicString());
+    EXPECT_TRUE(jwt::isSealedCalloutBody(body));
+    EXPECT_FALSE(jwt::isSealedCalloutBody(std::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(reqJwt.data()), reqJwt.size())));
+
+    // the service: open with its curve seed + the header's key, decode, cross-check the claim
+    auto opened = jwt::decodeSealedAuthorizationRequest(body, serverX->publicString(), serviceX->seedString());
+    EXPECT_EQ(opened->userNkey(), ukp->publicString());
+    EXPECT_EQ(opened->server().xkey, serverX->publicString());
+    // header key that is not the signed claim's key → refused (the header is unauthenticated)
+    auto otherX = nkeys::CreateCurveKeys();
+    auto forged = otherX->seal(std::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(reqJwt.data()), reqJwt.size()), serviceX->publicString());
+    EXPECT_THROW((void)jwt::decodeSealedAuthorizationRequest(forged, otherX->publicString(), serviceX->seedString()),
+                 jwt::InvalidClaimsError);
+    // wrong service seed / wrong sender key: the box does not open (nkeys' error, key material)
+    EXPECT_THROW((void)jwt::decodeSealedAuthorizationRequest(body, serverX->publicString(), otherX->seedString()),
+                 nkeys::Error);
+    EXPECT_THROW((void)jwt::decodeSealedAuthorizationRequest(body, otherX->publicString(), serviceX->seedString()),
+                 nkeys::Error);
+    // a plaintext body through the sealed path is a malformed token
+    EXPECT_THROW((void)jwt::decodeSealedAuthorizationRequest(std::span<const std::uint8_t>(
+        reinterpret_cast<const std::uint8_t*>(reqJwt.data()), reqJwt.size()), serverX->publicString(), serviceX->seedString()),
+                 jwt::Error);
+    // a signing seed is not a curve seed
+    EXPECT_THROW((void)jwt::decodeSealedAuthorizationRequest(body, serverX->publicString(), ckp->seedString()),
+                 nkeys::Error);
+
+    // the response: seal to the server's key; the server opens with xkp.Open(msg, accountXKey)
+    jwt::AuthorizationResponseClaims rs(ukp->publicString());
+    rs.setAudience(serverSign->publicString());
+    rs.setError("nope");
+    const std::string respJwt = rs.encode(ckp->seedString());
+    auto sealedResp = jwt::sealAuthorizationResponse(respJwt, serverX->publicString(), serviceX->seedString());
+    EXPECT_TRUE(jwt::isSealedCalloutBody(sealedResp));
+    auto plain = serverX->open(sealedResp, serviceX->publicString());
+    EXPECT_EQ(std::string(plain.begin(), plain.end()), respJwt);
+}

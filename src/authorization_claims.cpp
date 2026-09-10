@@ -272,6 +272,50 @@ std::unique_ptr<AuthorizationRequestClaims> decodeAuthorizationRequestClaims(con
     });
 }
 
+// ───────────────────────── sealed (xkey) callout bodies ─────────────────────────
+
+bool isSealedCalloutBody(std::span<const std::uint8_t> body) {
+    // Go (auth_callout.go): `!bytes.HasPrefix(msg, []byte("eyJ"))` — a JWT
+    // always starts with the base64url of `{"` … ; a sealed box with "xkv1"
+    return !(body.size() >= 3 && body[0] == 'e' && body[1] == 'y' && body[2] == 'J');
+}
+
+std::string openAuthorizationRequest(std::span<const std::uint8_t> sealedBody,
+                                     std::string_view serverXKey,
+                                     std::string_view serviceCurveSeed) {
+    if (!isSealedCalloutBody(sealedBody)) {
+        throw MalformedTokenError("callout body is not a sealed box (it is plain JWT text)");
+    }
+    auto xkp = nkeys::FromCurveSeed(serviceCurveSeed);  // rejects signing seeds (nkeys::Error)
+    auto plain = xkp->open(sealedBody, serverXKey);      // DecryptionError on a bad key/box
+    return std::string(plain.begin(), plain.end());
+}
+
+std::unique_ptr<AuthorizationRequestClaims>
+decodeSealedAuthorizationRequest(std::span<const std::uint8_t> sealedBody,
+                                 std::string_view serverXKey,
+                                 std::string_view serviceCurveSeed) {
+    auto claims = decodeAuthorizationRequestClaims(
+        openAuthorizationRequest(sealedBody, serverXKey, serviceCurveSeed));
+    // The header is unauthenticated; the claim is signed by the server. The
+    // two must agree, or someone else's curve key sealed a captured request.
+    if (claims->server().xkey != std::string(serverXKey)) {
+        throw InvalidClaimsError("sealed callout request: Nats-Server-Xkey header \"" +
+                                 std::string(serverXKey) + "\" does not match the signed server_id.xkey \"" +
+                                 claims->server().xkey + "\"");
+    }
+    return claims;
+}
+
+std::vector<std::uint8_t> sealAuthorizationResponse(const std::string& responseJwt,
+                                                    std::string_view serverXKey,
+                                                    std::string_view serviceCurveSeed) {
+    auto xkp = nkeys::FromCurveSeed(serviceCurveSeed);
+    return xkp->seal(std::span<const std::uint8_t>(
+                         reinterpret_cast<const std::uint8_t*>(responseJwt.data()), responseJwt.size()),
+                     serverXKey);
+}
+
 // ───────────────────────── AuthorizationResponseClaims ─────────────────────────
 
 class AuthorizationResponseClaims::Impl {

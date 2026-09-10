@@ -292,7 +292,7 @@ endif()
 if (JWT_BUILD_DRIVER)
     add_executable(cpp_driver tests/interop/cpp_driver.cpp)
     target_compile_options(cpp_driver PRIVATE ${JWT_WARNING_FLAGS})
-    target_link_libraries(cpp_driver PRIVATE jwt nkeys::nkeys)
+    target_link_libraries(cpp_driver PRIVATE jwt nkeys::nkeys nlohmann_json::nlohmann_json)
 endif()
 
 # --- Install + package config ----------------------------------------------
