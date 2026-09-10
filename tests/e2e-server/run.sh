@@ -71,6 +71,16 @@ trap cleanup EXIT
 pass=0
 check() { pass=$((pass+1)); echo "  ok $pass: $1"; }
 fail() { echo "  FAIL: $1" >&2; exit 1; }
+# bounded readiness poll on a detached container's log (review T3: fixed
+# sleeps raced responder startup on slow runners): container pattern count
+wait_ready() {
+    i=0
+    until [ "$(docker logs "$1" 2>&1 | grep -c "$2")" -ge "$3" ]; do
+        i=$((i+1))
+        [ "$i" -le 40 ] || { docker logs "$1" 2>&1 | tail -5 >&2; fail "$1 not ready: expected $3 x '$2'"; }
+        sleep 0.5
+    done
+}
 
 echo "e2e-server: building the toolbox image (Linux cpp_driver + nats CLI) for the callout service"
 docker build -q -f "$HERE/Dockerfile" -t "$TOOLBOX_IMG" "$REPO" >/dev/null || fail "toolbox image build failed"
@@ -94,10 +104,12 @@ done
 check "nats-server up with the C++-minted resolver.conf; creds accepted (rtt)"
 
 # 2 ── authenticated request/reply round trip
-out=$(docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" sh -c "
-    nats --server nats://$SRV:4222 --creds /w/u.creds reply demo.svc pong --count 1 >/dev/null 2>&1 &
-    sleep 1
-    nats --server nats://$SRV:4222 --creds /w/u.creds request demo.svc ping 2>/dev/null")
+docker run -d --name "$SRV-resp" --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+    nats --server nats://"$SRV":4222 --creds /w/u.creds reply demo.svc pong --count 1 >/dev/null
+wait_ready "$SRV-resp" "Listening on" 1
+out=$(docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
+    nats --server nats://"$SRV":4222 --creds /w/u.creds request demo.svc ping 2>/dev/null || true)
+docker rm -f "$SRV-resp" >/dev/null 2>&1 || true
 printf '%s' "$out" | grep -q "pong" || fail "request/reply round trip failed: $out"
 check "authenticated request/reply round trip (pub + sub permissions live)"
 
@@ -109,7 +121,7 @@ docker run -d --name "$SRV-resp" --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" sh
     nats --server nats://$SRV:4222 --creds /w/u.creds reply demo.svc pong --count 4 &
     nats --server nats://$SRV:4222 --creds /w/u.creds reply secret.svc leak --count 4 &
     sleep 30" >/dev/null
-sleep 2
+wait_ready "$SRV-resp" "Listening on" 2
 out=$(docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
     nats --server nats://"$SRV":4222 --creds /w/r.creds request demo.svc ping 2>/dev/null || true)
 printf '%s' "$out" | grep -q "pong" || fail "restricted user failed on an ALLOWED subject: $out"
@@ -134,7 +146,7 @@ docker run -d --name "$SRV-resp" --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" sh
     nats --server nats://$SRV:4222 --creds /w/u.creds reply demo.svc pong --count 4 &
     nats --server nats://$SRV:4222 --creds /w/u.creds reply secret.svc leak --count 4 &
     sleep 30" >/dev/null
-sleep 2
+wait_ready "$SRV-resp" "Listening on" 2
 out=$(docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
     nats --server nats://"$SRV":4222 --creds /w/s.creds request demo.svc ping 2>/dev/null || true)
 printf '%s' "$out" | grep -q "pong" || fail "scoped user failed on a template-ALLOWED subject: $out"
@@ -151,7 +163,7 @@ check "SCOPE TEMPLATE enforced: permissionless user governed by the account's us
 # error that exposed the original defaults bug, now deliberate
 docker run -d --name "$SRV-hold" --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
     nats --server nats://"$SRV":4222 --creds /w/l.creds sub limited.hold >/dev/null
-sleep 2
+wait_ready "$SRV-hold" "Subscribing" 1
 if docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
         nats --server nats://"$SRV":4222 --creds /w/l.creds rtt >/dev/null 2>&1; then
     fail "second connection on a conn=1 account was accepted — account limits not enforced"
@@ -169,7 +181,7 @@ docker rm -f "$SRV-billing" >/dev/null 2>&1 || true
 docker run -d --name "$SRV-billing" --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" sh -c "
     nats --server nats://$SRV:4222 --creds /w/x.creds reply billing.charge paid --count 4 &
     sleep 30" >/dev/null
-sleep 2
+wait_ready "$SRV-billing" "Listening on" 1
 out=$(docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
     nats --server nats://"$SRV":4222 --creds /w/u.creds request ext.billing.charge 100 2>/dev/null || true)
 printf '%s' "$out" | grep -q "paid" || fail "cross-account service call failed: $out"
@@ -238,7 +250,8 @@ docker rm -f "$SRV-resp" >/dev/null 2>&1 || true
 docker run -d --name "$SRV-resp" --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" sh -c "
     nats --server nats://$SRV:4222 --creds /w/u.creds reply demo.svc pong --count 4 &
     sleep 40" >/dev/null
-sleep 2
+wait_ready "$SRV-callout" "Listening on" 1
+wait_ready "$SRV-resp" "Listening on" 1
 # alice: sentinel of C, admitted into A by the callout → reaches A's responder
 out=$(docker run --rm --network "$NET" -v "$WORK":/w:ro "$BOX_IMG" \
     nats --server nats://"$SRV":4222 --creds /w/alice.creds request demo.svc ping --timeout 5s 2>&1 || true)

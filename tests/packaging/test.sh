@@ -69,8 +69,10 @@ if command -v pkg-config >/dev/null 2>&1; then
         $(PKG_CONFIG_PATH="$PC_DIR" pkg-config --cflags --libs natsjwt) -o "$WORK/pc-consumer"
     [ "$("$WORK/pc-consumer")" = "CONSUMER-OK" ] || fail "pkg-config consumer did not run"
     check "pkg-config consumer builds and runs"
+elif [ -n "${CI:-}" ]; then
+    fail "pkg-config is not installed on this CI runner — the natsjwt.pc check cannot run"
 else
-    check "pkg-config not present — skipped (CI covers it)"
+    echo "  -- pkg-config not present: check skipped (not counted; CI requires it)"
 fi
 
 # 4 ── add_subdirectory embed: alias works, top-level-only targets stay out

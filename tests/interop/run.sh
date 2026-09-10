@@ -169,7 +169,9 @@ mkdir -p "$TMP/flawed"
 "$GO" genflawed "$TMP/flawed" >/dev/null
 for f in expired notyet selfsigned to mapping user; do
     want=$("$GO" validate "$TMP/flawed/flawed-$f.jwt" | grep "^ISSUE:") || true
-    got=$("$CPP" validate "$TMP/flawed/flawed-$f.jwt" | grep "^ISSUE:") || fail "C++ could not decode Go's flawed-$f.jwt (advisory failures must stay inspectable)"
+    # capture the driver's status itself (a pipeline would report grep's)
+    cppout=$("$CPP" validate "$TMP/flawed/flawed-$f.jwt") || fail "C++ could not decode Go's flawed-$f.jwt (advisory failures must stay inspectable)"
+    got=$(printf '%s\n' "$cppout" | grep "^ISSUE:" || true)
     [ -n "$want" ] || fail "Go reported no issues for flawed-$f.jwt — the golden lost its flaw"
     [ "$got" = "$want" ] || fail "report mismatch on flawed-$f.jwt
 --- Go:
@@ -183,7 +185,7 @@ check "validation report: C++ decodes Go's flawed tokens and reports Go's issues
 mkdir -p "$TMP/v1" "$TMP/gen-cpp"
 "$GO" genv1 "$TMP/v1" >/dev/null
 "$GO" gengeneric "$TMP/v1" >/dev/null
-okseed=$(mktemp); acseed=$(mktemp)
+okseed=$TMP/op.seed; acseed=$TMP/acc.seed  # inside $TMP so the EXIT trap removes them on any path
 "$GO" seeds "$okseed" "$acseed" >/dev/null || fail "probe seeds failed"
 for t in operator:"$okseed" account:"$okseed" user:"$acseed" activation:"$acseed"; do
     name=${t%%:*}; seed=${t##*:}
@@ -192,7 +194,6 @@ for t in operator:"$okseed" account:"$okseed" user:"$acseed" activation:"$acseed
     out=$("$GO" validate "$TMP/v1/v2-$name.jwt") || fail "Go rejected the C++ v2 re-encode of v1 $name"
     printf '%s' "$out" | grep -q "type=$name" || fail "re-encoded $name has the wrong type: $out"
 done
-rm -f "$okseed" "$acseed"
 out=$("$CPP" decode generic "$TMP/v1/generic.jwt") || fail "C++ rejected Go's generic token"
 [ "$out" = "CPP-DECODE-OK claimtype=generic sub=$(printf '%s' "$out" | sed 's/.* sub=\([A-Z0-9]*\).*/\1/') data=[hello n nested type version]" ] \
     || fail "C++ generic decode unexpected: $out"

@@ -46,7 +46,8 @@ static std::string slurp(const char* p) {
     return s;
 }
 
-int main([[maybe_unused]] int argc, char** argv) try {
+int main(int argc, char** argv) try {
+    if (argc < 2) { std::cerr << "usage: cpp_driver <mode> [args]\n"; return 2; }
     std::string mode = argv[1];
     if (mode == "decode") {
         std::string type = argv[2], tok = slurp(argv[3]);
@@ -392,8 +393,10 @@ int main([[maybe_unused]] int argc, char** argv) try {
 
         jwt::AuthorizationRequestClaims rq(ckp->publicString());
         rq.setAudience(jwt::AuthRequestAudience);
+        // far-future: Go's Validate flags expiry, and a 2 s window raced two
+        // process starts on a slow runner (review T1)
         rq.setExpires(std::chrono::duration_cast<std::chrono::seconds>(
-                          std::chrono::system_clock::now().time_since_epoch()).count() + 2);
+                          std::chrono::system_clock::now().time_since_epoch()).count() + 3600);
         rq.server() = jwt::ServerID{"srv-1", "10.0.0.7", skp->publicString(), "2.10.29", "c1", {"east"}, ""};
         rq.setUserNkey(ukp->publicString());
         rq.clientInformation().host = "172.17.0.1";
@@ -494,6 +497,9 @@ int main([[maybe_unused]] int argc, char** argv) try {
                 {"op.jwt", opJwt}, {"acc.jwt", accJwt}, {"user.jwt", userJwt}, {"u.creds", creds}})
             std::ofstream(dir + "/" + n) << c;
         std::cout << "OK\n";
+    } else {
+        std::cerr << "ERR: unknown mode " << mode << "\n";
+        return 2;
     }
     return 0;
 } catch (const std::exception& e) {

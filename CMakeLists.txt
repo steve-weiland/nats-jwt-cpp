@@ -13,6 +13,7 @@ option(JWT_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(JWT_ENABLE_HARDENING "Enable security hardening flags" ON)
 option(JWT_USE_SYSTEM_NKEYS "Prefer system-installed nkeys-cpp if available" ON)
 option(JWT_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
+option(JWT_BUILD_DRIVER "Build the interop/e2e driver (cpp_driver); needs no GoogleTest" ${JWT_BUILD_TESTS})
 option(JWT_BUILD_CLI "Build the jwt++ CLI tool" ${PROJECT_IS_TOP_LEVEL})
 option(JWT_INSTALL "Generate install and package-config rules" ${PROJECT_IS_TOP_LEVEL})
 
@@ -276,19 +277,21 @@ if (JWT_BUILD_TESTS AND BUILD_TESTING)
     target_link_libraries(e2e_test PRIVATE jwt nkeys::nkeys nlohmann_json::nlohmann_json ${GTEST_LIBS} Threads::Threads)
     target_include_directories(e2e_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-    # Interop driver: the C++ half of tests/interop/run.sh (the live Go↔C++
-    # matrix). Built with tests; the matrix needs a Go toolchain and runs via
-    # the script / CI interop job, not ctest.
-    add_executable(cpp_driver tests/interop/cpp_driver.cpp)
-    target_compile_options(cpp_driver PRIVATE ${JWT_WARNING_FLAGS})
-    target_link_libraries(cpp_driver PRIVATE jwt nkeys::nkeys)
-
     include(GoogleTest)
     gtest_discover_tests(jwt_test)
     gtest_discover_tests(claims_test)
     gtest_discover_tests(cmd_args_test)
     gtest_discover_tests(validation_test)
     gtest_discover_tests(e2e_test)
+endif()
+
+# Interop/e2e driver: the C++ half of tests/interop/run.sh and the body of
+# the e2e callout service. Separate from the tests so the e2e toolbox image
+# can build it WITHOUT fetching GoogleTest (JWT_BUILD_TESTS=OFF).
+if (JWT_BUILD_DRIVER)
+    add_executable(cpp_driver tests/interop/cpp_driver.cpp)
+    target_compile_options(cpp_driver PRIVATE ${JWT_WARNING_FLAGS})
+    target_link_libraries(cpp_driver PRIVATE jwt nkeys::nkeys)
 endif()
 
 # --- Install + package config ----------------------------------------------

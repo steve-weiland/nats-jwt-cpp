@@ -6,7 +6,7 @@
 FROM alpine:3.20 AS build
 RUN apk add -q build-base cmake linux-headers git
 COPY . /src
-RUN cmake -S /src -B /b -DCMAKE_BUILD_TYPE=Release -DJWT_BUILD_TESTS=ON -DJWT_USE_SYSTEM_GTEST=OFF >/dev/null \
+RUN cmake -S /src -B /b -DCMAKE_BUILD_TYPE=Release -DJWT_BUILD_TESTS=OFF -DJWT_BUILD_DRIVER=ON >/dev/null \
  && cmake --build /b --target cpp_driver -j >/dev/null
 
 FROM natsio/nats-box:0.14.5
