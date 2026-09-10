@@ -225,18 +225,27 @@ const std::optional<ClientTLS>& AuthorizationRequestClaims::tls() const { return
 void AuthorizationRequestClaims::setRequestNonce(const std::string& nonce) { impl_->requestNonce_ = nonce; }
 std::string AuthorizationRequestClaims::requestNonce() const { return impl_->requestNonce_; }
 
-void AuthorizationRequestClaims::validate() const {
+void AuthorizationRequestClaims::checkStructure() const {
     if (impl_->subject_.empty()) {
         throw InvalidClaimsError("Authorization request subject cannot be empty");
     }
-    // Go: "User nkey is required" / "not a valid user public key"
+}
+
+void AuthorizationRequestClaims::validate(ValidationResults& vr) const {
+    internal::addTimeChecks(vr, impl_->expires_, impl_->notBefore_);
+    // Go's Validate, texts verbatim
     if (impl_->userNkey_.empty()) {
-        throw InvalidClaimsError("Authorization request user nkey is required");
+        vr.addError("User nkey is required");
+    } else if (!nkeys::IsValidPublicUserKey(impl_->userNkey_)) {
+        vr.addError("User nkey \"" + impl_->userNkey_ + "\" is not a valid user public key");
     }
-    if (!nkeys::IsValidPublicUserKey(impl_->userNkey_)) {
-        throw InvalidClaimsError("Authorization request user nkey \"" + impl_->userNkey_ +
-                                 "\" is not a valid user public key");
-    }
+}
+
+void AuthorizationRequestClaims::validate() const {
+    checkStructure();
+    ValidationResults vr;
+    validate(vr);
+    internal::throwFirstBlocking(vr);
 }
 
 std::string AuthorizationRequestClaims::encode(const std::string& seed) const {
@@ -294,7 +303,7 @@ std::unique_ptr<AuthorizationRequestClaims> decodeAuthorizationRequestClaims(con
     if (nats.contains("client_tls") && nats["client_tls"].is_object())
         d.tls_ = clientTlsFromJson(nats["client_tls"]);
     d.requestNonce_ = nats.value("request_nonce", "");
-    claims->validate();
+    claims->checkStructure();
     return claims;
 }
 
@@ -342,23 +351,37 @@ std::string AuthorizationResponseClaims::error() const { return impl_->error_; }
 void AuthorizationResponseClaims::setIssuerAccount(const std::string& a) { impl_->issuerAccount_ = a; }
 std::optional<std::string> AuthorizationResponseClaims::issuerAccount() const { return impl_->issuerAccount_; }
 
-void AuthorizationResponseClaims::validate() const {
-    // Go's Validate, verbatim rules
+void AuthorizationResponseClaims::checkStructure() const {
+    if (impl_->subject_.empty()) {
+        throw InvalidClaimsError("Authorization response subject cannot be empty");
+    }
+}
+
+void AuthorizationResponseClaims::validate(ValidationResults& vr) const {
+    internal::addTimeChecks(vr, impl_->expires_, impl_->notBefore_);
+    // Go's Validate, texts verbatim
     if (!nkeys::IsValidPublicUserKey(impl_->subject_)) {
-        throw InvalidClaimsError("Authorization response subject must be a user public key");
+        vr.addError("Subject must be a user public key");
     }
     if (!nkeys::IsValidPublicServerKey(impl_->audience_)) {
-        throw InvalidClaimsError("Authorization response audience must be a server public key");
+        vr.addError("Audience must be a server public key");
     }
     if (impl_->error_.empty() && impl_->jwt_.empty()) {
-        throw InvalidClaimsError("Authorization response requires error or jwt");
+        vr.addError("Error or Jwt is required");
     }
     if (!impl_->error_.empty() && !impl_->jwt_.empty()) {
-        throw InvalidClaimsError("Authorization response may set only error or jwt");
+        vr.addError("Only Error or Jwt can be set");
     }
     if (impl_->issuerAccount_ && !nkeys::IsValidPublicAccountKey(*impl_->issuerAccount_)) {
-        throw InvalidClaimsError("Authorization response issuer_account is not an account public key");
+        vr.addError("issuer_account is not an account public key");
     }
+}
+
+void AuthorizationResponseClaims::validate() const {
+    checkStructure();
+    ValidationResults vr;
+    validate(vr);
+    internal::throwFirstBlocking(vr);
 }
 
 std::string AuthorizationResponseClaims::encode(const std::string& seed) const {
@@ -408,7 +431,7 @@ std::unique_ptr<AuthorizationResponseClaims> decodeAuthorizationResponseClaims(c
     d.jwt_ = nats.value("jwt", "");
     d.error_ = nats.value("error", "");
     if (nats.contains("issuer_account")) d.issuerAccount_ = nats["issuer_account"].get<std::string>();
-    claims->validate();
+    claims->checkStructure();
     return claims;
 }
 

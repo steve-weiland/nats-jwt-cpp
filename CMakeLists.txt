@@ -324,6 +324,7 @@ if (JWT_INSTALL)
         ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/operator_claims.hpp
         ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/account_claims.hpp
         ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/authorization_claims.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/validation_results.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/activation_claims.hpp
         ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/permissions.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/include/jwt/user_claims.hpp

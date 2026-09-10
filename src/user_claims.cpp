@@ -21,7 +21,7 @@ namespace {
 
     // Go's checkPermission: "subject" or "subject queue"; queues only where
     // permitted (subscriptions), never a third token.
-    void validatePermissionSubject(const std::string& entry, bool permitQueue) {
+    void validatePermissionSubject(const std::string& entry, bool permitQueue, ValidationResults& vr) {
         std::vector<std::string> tokens;
         std::size_t pos = 0;
         while (pos <= entry.size()) {
@@ -33,32 +33,29 @@ namespace {
             tokens.push_back(entry.substr(pos, next - pos));
             pos = next + 1;
         }
+        // Go's checkPermission, texts verbatim
         if (tokens.size() > 2) {
-            throw InvalidClaimsError("Permission subject \"" + entry +
-                                     "\" contains too many spaces");
+            vr.addError("Permission Subject \"" + entry + "\" contains too many spaces");
+            return;
         }
         if (tokens.size() == 2 && !permitQueue) {
-            throw InvalidClaimsError("Permission subject \"" + entry +
-                                     "\" is not allowed to contain queue");
+            vr.addError("Permission Subject \"" + entry + "\" is not allowed to contain queue");
         }
         for (const auto& t : tokens) {
-            if (t.empty()) {
-                throw InvalidClaimsError("Permission subject \"" + entry +
-                                         "\" contains an empty token");
-            }
+            if (t.empty()) vr.addError("subject cannot be empty");  // Go: Subject.Validate
         }
     }
 
-    void validatePermissions(const Permissions& p) {
-        for (const auto& s : p.sub.allow) validatePermissionSubject(s, true);
-        for (const auto& s : p.sub.deny) validatePermissionSubject(s, true);
-        for (const auto& s : p.pub.allow) validatePermissionSubject(s, false);
-        for (const auto& s : p.pub.deny) validatePermissionSubject(s, false);
+    void validatePermissions(const Permissions& p, ValidationResults& vr) {
+        for (const auto& s : p.pub.allow) validatePermissionSubject(s, false, vr);
+        for (const auto& s : p.pub.deny) validatePermissionSubject(s, false, vr);
+        for (const auto& s : p.sub.allow) validatePermissionSubject(s, true, vr);
+        for (const auto& s : p.sub.deny) validatePermissionSubject(s, true, vr);
     }
 
     // Go: net.ParseCIDR — require addr/prefix with a parseable v4/v6 address
     // and an in-range prefix length.
-    void validateCidr(const std::string& cidr) {
+    void validateCidr(const std::string& cidr, ValidationResults& vr) {
         auto slash = cidr.find('/');
         bool ok = false;
         if (slash != std::string::npos && slash > 0 && slash + 1 < cidr.size()) {
@@ -74,12 +71,12 @@ namespace {
             }
         }
         if (!ok) {
-            throw InvalidClaimsError("invalid cidr \"" + cidr + "\" in user src limits");
+            vr.addError("invalid cidr \"" + cidr + "\" in user src limits");
         }
     }
 
     // Go: time.Parse("15:04:05", ...) — strict HH:MM:SS.
-    void validateTimeOfDay(const std::string& t, const char* which) {
+    void validateTimeOfDay(const std::string& t, const char* which, ValidationResults& vr) {
         bool ok = t.size() == 8 && t[2] == ':' && t[5] == ':';
         if (ok) {
             for (std::size_t i : {0u, 1u, 3u, 4u, 6u, 7u}) {
@@ -93,18 +90,18 @@ namespace {
             ok = h <= 23 && m <= 59 && sec <= 59;
         }
         if (!ok) {
-            throw InvalidClaimsError(std::string(which) + " in time range is invalid \"" + t + "\"");
+            vr.addError(std::string(which) + " in time range is invalid \"" + t + "\"");
         }
     }
 
     // Divergence from Go, documented: Go validates locale against the IANA
     // tzdb (time.LoadLocation); portable C++ tzdb access is not reliable
     // across our supported toolchains, so any non-empty string is accepted.
-    void validateLimits(const UserLimits& l) {
-        for (const auto& cidr : l.src) validateCidr(cidr);
+    void validateLimits(const UserLimits& l, ValidationResults& vr) {
+        for (const auto& cidr : l.src) validateCidr(cidr, vr);
         for (const auto& tr : l.times) {
-            validateTimeOfDay(tr.start, "start");
-            validateTimeOfDay(tr.end, "end");
+            validateTimeOfDay(tr.start, "start", vr);
+            validateTimeOfDay(tr.end, "end", vr);
         }
     }
 
@@ -250,8 +247,6 @@ std::string UserClaims::encodeWithSigner(const std::string& issuerPublicKey,
     if (!impl_->audience_.empty()) payload["aud"] = impl_->audience_;
     if (impl_->notBefore_ > 0) payload["nbf"] = impl_->notBefore_;
 
-    validatePermissions(impl_->permissions_);
-    validateLimits(impl_->limits_);
 
     // NATS-specific claims: start from the carried nats object, then
     // overwrite every field this port manages (erasing keys whose typed
@@ -309,7 +304,23 @@ std::string UserClaims::encodeWithSigner(const std::string& issuerPublicKey,
     return signAndAssemble(payload.dump(), issuerPublicKey, sign);
 }
 
+void UserClaims::validate(ValidationResults& vr) const {
+    internal::addTimeChecks(vr, impl_->expires_, impl_->notBefore_);
+    validatePermissions(impl_->permissions_, vr);
+    validateLimits(impl_->limits_, vr);
+    if (impl_->issuerAccount_ && !nkeys::IsValidPublicAccountKey(*impl_->issuerAccount_)) {
+        vr.addError("account_id is not an account public key");
+    }
+}
+
 void UserClaims::validate() const {
+    checkStructure();
+    ValidationResults vr;
+    validate(vr);
+    internal::throwFirstBlocking(vr);
+}
+
+void UserClaims::checkStructure() const {
     if (impl_->subject_.empty()) {
         throw InvalidClaimsError("User subject cannot be empty");
     }
@@ -459,7 +470,7 @@ std::unique_ptr<UserClaims> decodeUserClaims(const std::string& jwt) {
     }
 
     // Validate the decoded claims
-    claims->validate();
+    claims->checkStructure();
 
     return claims;
 }

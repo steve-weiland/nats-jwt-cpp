@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sort"
 	"fmt"
 	"os"
 	"strings"
@@ -395,19 +396,68 @@ func main() {
 			must(os.WriteFile(dir+"/"+name, []byte(content), 0600))
 		}
 		fmt.Println("OK")
-	case "validate": // jwt file → Decode + Validate; prints VALID or the issues
+	case "validate": // jwt file → Decode + Validate; one "blocking|timecheck|description" line per issue (sorted), then type=
 		data, err := os.ReadFile(os.Args[2])
 		must(err)
 		c, err := jwt.Decode(strings.TrimSpace(string(data)))
 		must(err)
 		vr := jwt.CreateValidationResults()
 		c.Validate(vr)
+		var lines []string
 		for _, i := range vr.Issues {
-			if i.Blocking || !i.TimeCheck {
-				fmt.Println("ISSUE:", i.Description)
-			}
+			lines = append(lines, fmt.Sprintf("%t|%t|%s", i.Blocking, i.TimeCheck, i.Description))
+		}
+		sort.Strings(lines)
+		for _, l := range lines {
+			fmt.Println("ISSUE:", l)
 		}
 		fmt.Println("type=" + string(c.ClaimType()))
+	case "genflawed": // dir → tokens Go can MINT but its own Validate flags (Encode does not validate)
+		dir := os.Args[2]
+		okp, _ := nkeys.CreateOperator()
+		opk, _ := okp.PublicKey()
+		akp, _ := nkeys.CreateAccount()
+		apk, _ := akp.PublicKey()
+		ukp, _ := nkeys.CreateUser()
+		upk, _ := ukp.PublicKey()
+		// expired operator (time check)
+		oc := jwt.NewOperatorClaims(opk)
+		oc.Expires = 1700000000
+		expired, err := oc.Encode(okp)
+		must(err)
+		// user not yet valid (time check)
+		uc := jwt.NewUserClaims(upk)
+		uc.NotBefore = 4102444800
+		notyet, err := uc.Encode(akp)
+		must(err)
+		// self-signed account with the default limits (warning)
+		sc := jwt.NewAccountClaims(apk)
+		selfsigned, err := sc.Encode(akp)
+		must(err)
+		// operator-signed account importing with the deprecated `to` (warning)
+		ic := jwt.NewAccountClaims(apk)
+		other, _ := nkeys.CreateAccount()
+		otherpk, _ := other.PublicKey()
+		ic.Imports.Add(&jwt.Import{Name: "old", Subject: "legacy.>", Account: otherpk, Type: jwt.Stream, To: "local.>"})
+		deprecatedTo, err := ic.Encode(okp)
+		must(err)
+		// operator-signed account with a 150-weight mapping (error)
+		mc := jwt.NewAccountClaims(apk)
+		mc.Mappings = jwt.Mapping{"orders.>": []jwt.WeightedMapping{{Subject: "orders.v2.>", Weight: 150}}}
+		badMapping, err := mc.Encode(okp)
+		must(err)
+		// user with a queue in pub + a bad cidr (two errors)
+		qc := jwt.NewUserClaims(upk)
+		qc.Permissions.Pub.Allow.Add("jobs.* workers")
+		qc.Limits.Src.Add("not-a-cidr")
+		badUser, err := qc.Encode(akp)
+		must(err)
+		for name, content := range map[string]string{"flawed-expired.jwt": expired, "flawed-notyet.jwt": notyet,
+			"flawed-selfsigned.jwt": selfsigned, "flawed-to.jwt": deprecatedTo, "flawed-mapping.jwt": badMapping,
+			"flawed-user.jwt": badUser} {
+			must(os.WriteFile(dir+"/"+name, []byte(content), 0600))
+		}
+		fmt.Println("OK")
 	case "djwt": // jwt file → DecorateJWT output (armored by claim type)
 		data, err := os.ReadFile(os.Args[2])
 		must(err)

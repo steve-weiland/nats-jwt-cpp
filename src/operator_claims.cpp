@@ -39,38 +39,40 @@ namespace {
                                 const std::vector<std::string>& serviceURLs,
                                 const std::string& systemAccount,
                                 const std::string& assertServerVersion,
-                                const std::vector<std::string>& signingKeys) {
+                                const std::vector<std::string>& signingKeys,
+                                ValidationResults& vr) {
         if (!accountServerURL.empty() && !splitURL(accountServerURL).valid) {
-            throw InvalidClaimsError("account server url \"" + accountServerURL +
+            vr.addError("account server url \"" + accountServerURL +
                                      "\" requires a protocol");
         }
         for (const auto& u : serviceURLs) {
             if (u.empty()) continue;
             auto parsed = splitURL(u);
             if (!parsed.valid) {
-                throw InvalidClaimsError("error parsing operator service url \"" + u + "\"");
+                vr.addError("error parsing operator service url \"" + u + "\"");
+                continue;
             }
             if (parsed.hasUserInfo) {
-                throw InvalidClaimsError("operator service url \"" + u +
+                vr.addError("operator service url \"" + u +
                                          "\" - credentials are not supported");
             }
             if (!parsed.path.empty()) {
-                throw InvalidClaimsError("operator service url \"" + u +
+                vr.addError("operator service url \"" + u +
                                          "\" - paths are not supported");
             }
             if (parsed.scheme != "nats" && parsed.scheme != "tls" &&
                 parsed.scheme != "ws" && parsed.scheme != "wss") {
-                throw InvalidClaimsError("operator service url \"" + u +
+                vr.addError("operator service url \"" + u +
                                          "\" - protocol not supported (nats, tls, ws, wss only)");
             }
         }
         for (const auto& k : signingKeys) {
             if (!nkeys::IsValidPublicOperatorKey(k)) {
-                throw InvalidClaimsError(k + " is not an operator public key");
+                vr.addError(k + " is not an operator public key");
             }
         }
         if (!systemAccount.empty() && !nkeys::IsValidPublicAccountKey(systemAccount)) {
-            throw InvalidClaimsError(systemAccount + " is not an account public key");
+            vr.addError(systemAccount + " is not an account public key");
         }
         if (!assertServerVersion.empty()) {
             int dots = 0;
@@ -85,7 +87,7 @@ namespace {
             }
             ok = ok && checkPart(part) && dots == 2;
             if (!ok) {
-                throw InvalidClaimsError(
+                vr.addError(
                     "asserted server version must be of the form <major>.<minor>.<update>");
             }
         }
@@ -209,9 +211,6 @@ std::string OperatorClaims::encodeWithSigner(const std::string& issuerPublicKey,
     if (!impl_->audience_.empty()) payload["aud"] = impl_->audience_;
     if (impl_->notBefore_ > 0) payload["nbf"] = impl_->notBefore_;
 
-    validateOperatorWiring(impl_->accountServerURL_, impl_->operatorServiceURLs_,
-                           impl_->systemAccount_, impl_->assertServerVersion_,
-                           impl_->signingKeys_);
 
     // NATS-specific claims: start from the carried nats object, then
     // overwrite the fields this port manages.
@@ -248,7 +247,21 @@ std::string OperatorClaims::encodeWithSigner(const std::string& issuerPublicKey,
     return signAndAssemble(payload.dump(), issuerPublicKey, sign);
 }
 
+void OperatorClaims::validate(ValidationResults& vr) const {
+    internal::addTimeChecks(vr, impl_->expires_, impl_->notBefore_);
+    validateOperatorWiring(impl_->accountServerURL_, impl_->operatorServiceURLs_,
+                           impl_->systemAccount_, impl_->assertServerVersion_,
+                           impl_->signingKeys_, vr);
+}
+
 void OperatorClaims::validate() const {
+    checkStructure();
+    ValidationResults vr;
+    validate(vr);
+    internal::throwFirstBlocking(vr);
+}
+
+void OperatorClaims::checkStructure() const {
     if (impl_->subject_.empty()) {
         throw InvalidClaimsError("Operator subject cannot be empty");
     }
@@ -362,7 +375,7 @@ std::unique_ptr<OperatorClaims> decodeOperatorClaims(const std::string& jwt) {
     }
 
     // Validate the decoded claims
-    claims->validate();
+    claims->checkStructure();
 
     return claims;
 }

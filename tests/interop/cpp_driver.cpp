@@ -2,6 +2,9 @@
 // modes:
 //   decode <type> <file>      authenticated decode; prints CPP-DECODE-OK + sub
 //   verify <file>             signature check via the embedded issuer
+//   validate <file>           authenticated decode (structure only), then the
+//                             accumulated report: one sorted
+//                             "blocking|timecheck|description" line per issue
 //   chain <op> <acc> <user>   strict() chain validation
 //   encode <dir>              writes op/acc/user.jwt + u.creds (direct issuance)
 //   encode-signer <dir>       the same files minted through encodeWithSigner —
@@ -26,6 +29,7 @@
 //                             a memory-resolver nats-server
 #include <jwt/jwt.hpp>
 #include <nkeys/nkeys.hpp>
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -51,6 +55,17 @@ int main([[maybe_unused]] int argc, char** argv) try {
         else if (type == "authorization_response") { auto c = jwt::decodeAuthorizationResponseClaims(tok); std::cout << "CPP-DECODE-OK sub=" << c->subject() << "\n"; }
         else if (type == "user") { auto c = jwt::decodeUserClaims(tok); std::cout << "CPP-DECODE-OK sub=" << c->subject() << "\n"; }
         else { std::cerr << "ERR: unknown claim type " << type << "\n"; return 2; }
+    } else if (mode == "validate") {
+        auto c = jwt::decode(slurp(argv[2]));
+        jwt::ValidationResults vr;
+        c->validate(vr);
+        std::vector<std::string> lines;
+        for (const auto& i : vr.issues())
+            lines.push_back(std::string(i.blocking ? "true" : "false") + "|" +
+                            (i.timeCheck ? "true" : "false") + "|" + i.description);
+        std::sort(lines.begin(), lines.end());
+        for (const auto& l : lines) std::cout << "ISSUE: " << l << "\n";
+        std::cout << "CPP-VALIDATE-OK\n";
     } else if (mode == "verify") {
         std::cout << (jwt::verify(slurp(argv[2])) ? "CPP-VERIFY-OK" : "CPP-VERIFY-FAIL") << "\n";
     } else if (mode == "chain") {

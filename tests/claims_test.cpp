@@ -1697,3 +1697,151 @@ TEST(GenericFieldsTest, IssueUserJWTCarriesTags) {
                                    "scoped", 0, {"Team:Blue", "ops"});
     EXPECT_EQ(natsObjectOf(token).at("tags"), (std::vector<std::string>{"team:blue", "ops"}));
 }
+
+// ============================================================================
+// ValidationResults (fix-plan group 6c) — Go's accumulated report: issues are
+// {description, blocking, timeCheck}; AddError is blocking, AddTimeCheck and
+// AddWarning are not; IsBlocking(includeTimeChecks). Go's Encode does NOT run
+// Validate (only subject/prefix checks), so Go can mint tokens that fail its
+// own rules — decode must keep them inspectable (the #6 lesson) and the
+// report must list every finding, Go's strings verbatim. Only two warnings
+// exist in Go: self-signed account with limits (measured: fires even for the
+// -1 defaults — IsEmpty is the zero value) and an import using `to`.
+// ============================================================================
+
+namespace {
+    // sign an arbitrary payload JSON as a v2 token (Go can mint these; our
+    // encode refuses them — that is the point)
+    std::string mintRaw(const std::string& payloadJson, const nkeys::KeyPair& kp) {
+        std::string header = R"({"typ":"JWT","alg":"ed25519-nkey"})";
+        auto b64 = [](const std::string& s) {
+            return jwt::internal::base64url_encode(std::span<const std::uint8_t>(
+                reinterpret_cast<const std::uint8_t*>(s.data()), s.size()));
+        };
+        std::string si = b64(header) + "." + b64(payloadJson);
+        return si + "." + jwt::internal::base64url_encode(kp.sign(std::span<const std::uint8_t>(
+                              reinterpret_cast<const std::uint8_t*>(si.data()), si.size())));
+    }
+    std::vector<std::string> descriptions(const jwt::ValidationResults& vr) {
+        std::vector<std::string> out;
+        for (const auto& i : vr.issues()) out.push_back(i.description);
+        return out;
+    }
+}
+
+TEST(ValidationResultsTest, ModelMatchesGo) {
+    jwt::ValidationResults vr;
+    EXPECT_TRUE(vr.isEmpty());
+    vr.addTimeCheck("claim is expired");
+    EXPECT_FALSE(vr.isEmpty());
+    EXPECT_FALSE(vr.isBlocking(false));
+    EXPECT_TRUE(vr.isBlocking(true));
+    EXPECT_EQ(vr.warnings(), (std::vector<std::string>{"claim is expired"}));  // Go: non-blocking = warning
+    EXPECT_TRUE(vr.errors().empty());
+    vr.addWarning("w");
+    EXPECT_FALSE(vr.isBlocking(false));
+    vr.addError("e");
+    EXPECT_TRUE(vr.isBlocking(false));
+    EXPECT_EQ(vr.errors(), (std::vector<std::string>{"e"}));
+    EXPECT_EQ(vr.warnings(), (std::vector<std::string>{"claim is expired", "w"}));
+    ASSERT_EQ(vr.issues().size(), 3u);
+    EXPECT_TRUE(vr.issues()[0].timeCheck);
+    EXPECT_FALSE(vr.issues()[0].blocking);
+    EXPECT_TRUE(vr.issues()[2].blocking);
+}
+
+TEST(ValidationResultsTest, ExpiredIsATimeCheckNotAnError) {
+    auto op = jwt::decodeOperatorClaims(readFixture2("operator-expired.jwt"));
+    jwt::ValidationResults vr;
+    op->validate(vr);
+    EXPECT_EQ(descriptions(vr), (std::vector<std::string>{"claim is expired"}));
+    EXPECT_TRUE(vr.issues()[0].timeCheck);
+    EXPECT_FALSE(vr.isBlocking(false));
+    EXPECT_TRUE(vr.isBlocking(true));
+    EXPECT_NO_THROW(op->validate());  // the throwing form only throws on BLOCKING issues
+    // nbf in the future → "claim is not yet valid", through the base interface
+    auto okp = nkeys::CreateOperator();
+    jwt::OperatorClaims oc(okp->publicString());
+    oc.setNotBefore(4102444800);
+    std::unique_ptr<jwt::Claims> base = jwt::decode(oc.encode(okp->seedString()));
+    jwt::ValidationResults vr2;
+    base->validate(vr2);
+    EXPECT_EQ(descriptions(vr2), (std::vector<std::string>{"claim is not yet valid"}));
+}
+
+TEST(ValidationResultsTest, GoWarningsAreReportedNotThrown) {
+    // self-signed account: Go warns even for the -1 defaults (measured)
+    auto acc = jwt::decodeAccountClaims(readFixture2("account-selfsigned.jwt"));
+    jwt::ValidationResults vr;
+    acc->validate(vr);
+    EXPECT_EQ(descriptions(vr),
+              (std::vector<std::string>{"self-signed account JWTs shouldn't contain operator limits"}));
+    EXPECT_FALSE(vr.isBlocking(true));
+    EXPECT_NO_THROW(acc->validate());
+    // operator-signed: no warning
+    auto signedAcc = jwt::decodeAccountClaims(readFixture2("account.jwt"));
+    jwt::ValidationResults vr2;
+    signedAcc->validate(vr2);
+    EXPECT_TRUE(vr2.isEmpty());
+    // import using the deprecated `to`
+    auto okp = nkeys::CreateOperator();
+    jwt::AccountClaims ac(nkeys::CreateAccount()->publicString());
+    jwt::Import imp;
+    imp.name = "old"; imp.subject = "legacy.>"; imp.account = nkeys::CreateAccount()->publicString();
+    imp.type = jwt::ExportType::Stream; imp.to = "local.>";
+    ac.imports().push_back(imp);
+    jwt::ValidationResults vr3;
+    ac.validate(vr3);
+    EXPECT_EQ(descriptions(vr3),
+              (std::vector<std::string>{"the field to has been deprecated (use LocalSubject instead)"}));
+    EXPECT_NO_THROW((void)ac.encode(okp->seedString()));  // warnings never block encode
+}
+
+TEST(ValidationResultsTest, AccumulatesEveryFindingAndThrowsTheFirstBlocking) {
+    auto akp = nkeys::CreateAccount();
+    jwt::UserClaims uc(nkeys::CreateUser()->publicString());
+    uc.permissions().pub.allow = {"jobs.* workers"};  // queue in pub
+    uc.limits().src = {"not-a-cidr"};
+    jwt::ValidationResults vr;
+    uc.validate(vr);
+    EXPECT_EQ(descriptions(vr), (std::vector<std::string>{
+        R"(Permission Subject "jobs.* workers" is not allowed to contain queue)",  // Go's exact text
+        R"(invalid cidr "not-a-cidr" in user src limits)"}));
+    EXPECT_TRUE(vr.isBlocking(false));
+    try {
+        (void)uc.encode(akp->seedString());
+        FAIL() << "encode must refuse blocking issues";
+    } catch (const jwt::InvalidClaimsError& e) {
+        EXPECT_STREQ(e.what(), R"(Permission Subject "jobs.* workers" is not allowed to contain queue)");
+    }
+}
+
+TEST(ValidationResultsTest, GoMintableAdvisoryFailuresDecodeAndReport) {
+    // Go's Encode does not validate: an account with a 150-weight mapping is
+    // mintable there. Decode must not throw; the report must carry Go's text.
+    auto okp = nkeys::CreateOperator();
+    auto akp = nkeys::CreateAccount();
+    std::string payload = R"({"iat":1700000000,"iss":")" + okp->publicString() + R"(","jti":"x","sub":")" +
+        akp->publicString() + R"(","nats":{"limits":{"subs":-1,"data":-1,"payload":-1,"imports":-1,)" +
+        R"("exports":-1,"wildcards":true,"conn":-1,"leaf":-1},"default_permissions":{"pub":{},"sub":{}},)" +
+        R"("mappings":{"orders.>":[{"subject":"orders.v2.>","weight":150}]},"type":"account","version":2}})";
+    auto acc = jwt::decodeAccountClaims(mintRaw(payload, *okp));
+    jwt::ValidationResults vr;
+    acc->validate(vr);
+    // measured: Go reports BOTH — a bad weight still counts toward the total
+    EXPECT_EQ(descriptions(vr), (std::vector<std::string>{
+        R"(Mapping "orders.>" has a weight 150 that exceeds 100)",
+        R"(Mapping "orders.>" exceeds 100% among all of it's weighted to mappings)"}));
+    EXPECT_TRUE(vr.isBlocking(false));
+    EXPECT_THROW((void)acc->encode(okp->seedString()), jwt::InvalidClaimsError);  // we still refuse to re-mint it
+    // two 60-weights: Go's total rule, exact text (with Go's "it's")
+    std::string payload2 = payload;
+    payload2.replace(payload2.find(R"([{"subject":"orders.v2.>","weight":150}])"),
+                     std::string(R"([{"subject":"orders.v2.>","weight":150}])").size(),
+                     R"([{"subject":"orders.v2.>","weight":60},{"subject":"orders.v3.>","weight":60}])");
+    auto acc2 = jwt::decodeAccountClaims(mintRaw(payload2, *okp));
+    jwt::ValidationResults vr2;
+    acc2->validate(vr2);
+    EXPECT_EQ(descriptions(vr2), (std::vector<std::string>{
+        R"(Mapping "orders.>" exceeds 100% among all of it's weighted to mappings)"}));
+}

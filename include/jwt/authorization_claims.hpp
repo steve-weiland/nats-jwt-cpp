@@ -95,6 +95,7 @@ public:
     [[nodiscard]] std::string encode(const std::string& seed) const override;
     [[nodiscard]] std::string encodeWithSigner(const std::string& issuerPublicKey,
                                                const SignFn& sign) const override;
+    void validate(ValidationResults& vr) const override;
     void validate() const override;
 
     void setName(const std::string& name);
@@ -121,6 +122,7 @@ public:
 
 private:
     friend std::unique_ptr<AuthorizationRequestClaims> decodeAuthorizationRequestClaims(const std::string&);
+    void checkStructure() const;
     class Impl;
     std::unique_ptr<Impl> impl_;
 };
@@ -151,6 +153,7 @@ public:
     [[nodiscard]] std::string encode(const std::string& seed) const override;
     [[nodiscard]] std::string encodeWithSigner(const std::string& issuerPublicKey,
                                                const SignFn& sign) const override;
+    void validate(ValidationResults& vr) const override;
     void validate() const override;
 
     void setName(const std::string& name);
@@ -171,6 +174,7 @@ public:
 
 private:
     friend std::unique_ptr<AuthorizationResponseClaims> decodeAuthorizationResponseClaims(const std::string&);
+    void checkStructure() const;
     class Impl;
     std::unique_ptr<Impl> impl_;
 };

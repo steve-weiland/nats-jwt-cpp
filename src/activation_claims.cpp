@@ -117,7 +117,24 @@ std::string ActivationClaims::encodeWithSigner(const std::string& issuerPublicKe
     return signAndAssemble(payload.dump(), issuerPublicKey, sign);
 }
 
+void ActivationClaims::validate(ValidationResults& vr) const {
+    internal::addTimeChecks(vr, impl_->expires_, impl_->notBefore_);
+    if (impl_->importType_ != ExportType::Stream && impl_->importType_ != ExportType::Service) {
+        vr.addError("invalid import type: \"" + std::string(exportTypeToString(impl_->importType_)) + "\"");
+    }
+    if (impl_->issuerAccount_ && !nkeys::IsValidPublicAccountKey(*impl_->issuerAccount_)) {
+        vr.addError("account_id is not an account public key");
+    }
+}
+
 void ActivationClaims::validate() const {
+    checkStructure();
+    ValidationResults vr;
+    validate(vr);
+    internal::throwFirstBlocking(vr);
+}
+
+void ActivationClaims::checkStructure() const {
     if (impl_->subject_.empty()) {
         throw InvalidClaimsError("Activation subject cannot be empty");
     }
@@ -197,7 +214,7 @@ std::unique_ptr<ActivationClaims> decodeActivationClaims(const std::string& jwt)
     if (nats.contains("issuer_account")) {
         claims->impl_->issuerAccount_ = nats["issuer_account"].get<std::string>();
     }
-    claims->validate();
+    claims->checkStructure();
     return claims;
 }
 

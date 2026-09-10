@@ -7,6 +7,7 @@
 #include <functional>
 #include <span>
 #include <vector>
+#include "jwt/validation_results.hpp"
 
 namespace jwt {
 
@@ -64,7 +65,15 @@ public:
     [[nodiscard]] virtual std::string encodeWithSigner(const std::string& issuerPublicKey,
                                                        const SignFn& sign) const = 0;
 
-    /// Validate the claims structure
+    /// Go's Validate: append EVERY finding — structural errors, the claim
+    /// type's rules, Go's two warnings, and the exp/nbf time checks — to vr.
+    /// Never throws for a finding. Decode does not run this (an advisory
+    /// failure must not make a token un-inspectable); encode does.
+    virtual void validate(ValidationResults& vr) const = 0;
+
+    /// Throwing form: the structural check, then validate(vr), then throw the
+    /// first BLOCKING issue as InvalidClaimsError. Time checks and warnings
+    /// never throw (Go parity: an expired token encodes and decodes).
     virtual void validate() const = 0;
 };
 

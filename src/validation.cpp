@@ -236,7 +236,7 @@ ValidationResult validate(const std::string& jwt, const ValidationOptions& opts)
         claims->validate();
     } catch (const std::exception& e) {
         std::ostringstream oss;
-        oss << "Structural validation failed: " << e.what();
+        oss << "Validation failed: " << e.what();
         return ValidationResult::failure(oss.str());
     }
 
@@ -255,7 +255,7 @@ ValidationResult validate(const Claims& claims, const ValidationOptions& opts) {
         claims.validate();
     } catch (const std::exception& e) {
         std::ostringstream oss;
-        oss << "Structural validation failed: " << e.what();
+        oss << "Validation failed: " << e.what();
         return ValidationResult::failure(oss.str());
     }
 

@@ -24,6 +24,7 @@ public:
     [[nodiscard]] std::string encode(const std::string& seed) const override;
     [[nodiscard]] std::string encodeWithSigner(const std::string& issuerPublicKey,
                                                const SignFn& sign) const override;
+    void validate(ValidationResults& vr) const override;
     void validate() const override;
 
     // Operator-specific
@@ -61,6 +62,7 @@ public:
 
 private:
     friend std::unique_ptr<OperatorClaims> decodeOperatorClaims(const std::string&);
+    void checkStructure() const;
     class Impl;
     std::unique_ptr<Impl> impl_;
 };

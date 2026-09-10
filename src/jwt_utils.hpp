@@ -10,6 +10,13 @@
 
 namespace jwt::internal {
 
+/// Go's ClaimsData.Validate: exp/nbf against now, as TIME CHECKS.
+void addTimeChecks(ValidationResults& vr, std::int64_t exp, std::int64_t nbf);
+
+/// Throw the first blocking issue as InvalidClaimsError (the throwing
+/// validate() built on the accumulating one).
+void throwFirstBlocking(const ValidationResults& vr);
+
 /// A SignFn over an in-process keypair (the encode(seed) path). The keypair
 /// must outlive the returned function.
 SignFn signerFor(const nkeys::KeyPair& kp);

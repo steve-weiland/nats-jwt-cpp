@@ -91,31 +91,40 @@ namespace {
     // ADVISORY (its tests say "don't block encoding!!!"); we enforce at
     // encode, a documented divergence consistent with the user-claims port.
     void validateAccountConfig(const AccountLimits& limits,
-                               const std::map<std::string, std::vector<WeightedMapping>>& mappings) {
+                               const std::map<std::string, std::vector<WeightedMapping>>& mappings,
+                               ValidationResults& vr) {
         if (!limits.tieredLimits.empty()) {
             if (!(limits.jetStream == JetStreamLimits{})) {
-                throw InvalidClaimsError(
-                    "JetStream Limits and tiered JetStream Limits are mutually exclusive");
+                vr.addError("JetStream Limits and tiered JetStream Limits are mutually exclusive");
             }
             if (limits.tieredLimits.count("")) {
-                throw InvalidClaimsError(
-                    "Tiered JetStream Limits can not contain a blank \"\" tier name");
+                vr.addError("Tiered JetStream Limits can not contain a blank \"\" tier name");
             }
         }
+        // Go's Mapping.Validate, control flow and texts verbatim (a bad weight
+        // still counts toward the total — Go reports both; "it's" is Go's).
         for (const auto& [from, wms] : mappings) {
             std::map<std::string, std::uint32_t> perCluster;
             std::uint32_t total = 0;
             for (const auto& wm : wms) {
                 const std::uint32_t weight = wm.weight == 0 ? 100 : wm.weight;  // Go GetWeight
                 if (weight > 100) {
-                    throw InvalidClaimsError("Mapping \"" + from + "\" has a weight that exceeds 100");
+                    vr.addError("Mapping \"" + from + "\" has a weight " + std::to_string(weight) +
+                                " that exceeds 100");
                 }
-                auto& bucket = wm.cluster.empty() ? total : perCluster[wm.cluster];
-                bucket += weight;
-                if (bucket > 100) {
-                    throw InvalidClaimsError("Mapping \"" + from +
-                                             "\" exceeds 100% among all of its weighted to mappings");
+                if (!wm.cluster.empty()) {
+                    auto& t = perCluster[wm.cluster];
+                    t += weight;
+                    if (t > 100) {
+                        vr.addError("Mapping \"" + from + "\" in cluster \"" + wm.cluster +
+                                    "\" exceeds 100% among all of it's weighted to mappings");
+                    }
+                } else {
+                    total += weight;
                 }
+            }
+            if (total > 100) {
+                vr.addError("Mapping \"" + from + "\" exceeds 100% among all of it's weighted to mappings");
             }
         }
     }
@@ -219,29 +228,29 @@ namespace {
     // Go's Export.Validate / Import.Validate — enforced at encode (Go's are
     // advisory), matching the rest of this port.
     // Go's ExternalAuthorization.Validate, verbatim rules.
-    void validateExternalAuthorization(const ExternalAuthorization& a) {
+    void validateExternalAuthorization(const ExternalAuthorization& a, ValidationResults& vr) {
         if (!a.allowedAccounts.empty() && a.authUsers.empty()) {
-            throw InvalidClaimsError(
+            vr.addError(
                 "External authorization cannot have accounts without users specified");
         }
         for (const auto& u : a.authUsers) {
             if (!nkeys::IsValidPublicUserKey(u)) {
-                throw InvalidClaimsError("AuthUser \"" + u + "\" is not a valid user public key");
+                vr.addError("AuthUser \"" + u + "\" is not a valid user public key");
             }
         }
         for (const auto& acc : a.allowedAccounts) {
             if (acc == AnyAccount) {
                 if (a.allowedAccounts.size() > 1) {
-                    throw InvalidClaimsError(
+                    vr.addError(
                         std::string("AllowedAccounts can only be a list of accounts or \"") +
                         AnyAccount + "\"");
                 }
             } else if (!nkeys::IsValidPublicAccountKey(acc)) {
-                throw InvalidClaimsError("Account \"" + acc + "\" is not a valid account public key");
+                vr.addError("Account \"" + acc + "\" is not a valid account public key");
             }
         }
         if (!a.xkey.empty() && !nkeys::IsValidPublicCurveKey(a.xkey)) {
-            throw InvalidClaimsError("XKey \"" + a.xkey + "\" is not a valid public xkey");
+            vr.addError("XKey \"" + a.xkey + "\" is not a valid public xkey");
         }
     }
 
@@ -264,60 +273,63 @@ namespace {
     }
 
     void validateExportsImports(const std::vector<Export>& exports,
-                                const std::vector<Import>& imports) {
+                                const std::vector<Import>& imports, ValidationResults& vr) {
         for (const auto& e : exports) {
             if (e.type != ExportType::Stream && e.type != ExportType::Service) {
-                throw InvalidClaimsError("invalid export type for \"" + e.subject + "\"");
+                vr.addError("invalid export type for \"" + e.subject + "\"");
             }
             if (e.type == ExportType::Stream) {
                 if (!e.responseType.empty()) {
-                    throw InvalidClaimsError("invalid response type for stream \"" + e.subject + "\"");
+                    vr.addError("invalid response type for stream \"" + e.subject + "\"");
                 }
                 if (e.allowTrace) {
-                    throw InvalidClaimsError("AllowTrace only valid for service export");
+                    vr.addError("AllowTrace only valid for service export");
                 }
                 if (e.latency) {
-                    throw InvalidClaimsError("latency tracking only permitted for services");
+                    vr.addError("latency tracking only permitted for services");
                 }
                 if (e.responseThresholdNanos > 0) {
-                    throw InvalidClaimsError("response threshold only valid for services");
+                    vr.addError("response threshold only valid for services");
                 }
             } else {
                 if (!e.responseType.empty() && e.responseType != "Singleton" &&
                     e.responseType != "Stream" && e.responseType != "Chunked") {
-                    throw InvalidClaimsError("invalid response type for service: \"" +
+                    vr.addError("invalid response type for service: \"" +
                                              e.responseType + "\"");
                 }
             }
             if (e.responseThresholdNanos < 0) {
-                throw InvalidClaimsError("negative response threshold is invalid");
+                vr.addError("negative response threshold is invalid");
             }
             if (e.latency && (e.latency->sampling < 0 || e.latency->sampling > 100)) {
-                throw InvalidClaimsError("sampling percentage needs to be between 1-100 (or 0 for headers)");
+                vr.addError("sampling percentage needs to be between 1-100 (or 0 for headers)");
             }
             if (e.accountTokenPosition > 0) {
                 if (e.subject.find('*') == std::string::npos &&
                     e.subject.find('>') == std::string::npos) {
-                    throw InvalidClaimsError(
+                    vr.addError(
                         "Account Token Position can only be used with wildcard subjects");
                 }
             }
         }
         for (const auto& i : imports) {
             if (i.type != ExportType::Stream && i.type != ExportType::Service) {
-                throw InvalidClaimsError("invalid import type for \"" + i.subject + "\"");
+                vr.addError("invalid import type for \"" + i.subject + "\"");
             }
             if (i.type == ExportType::Service && i.allowTrace) {
-                throw InvalidClaimsError("AllowTrace only valid for stream import");
+                vr.addError("AllowTrace only valid for stream import");
             }
             if (i.account.empty()) {
-                throw InvalidClaimsError("account to import from is not specified");
+                vr.addError("account to import from is not specified");
+            }
+            if (!i.to.empty()) {
+                vr.addWarning("the field to has been deprecated (use LocalSubject instead)");
             }
             if (!i.localSubject.empty() && !i.to.empty()) {
-                throw InvalidClaimsError("Local Subject replaces To");
+                vr.addError("Local Subject replaces To");
             }
             if (i.share && i.type != ExportType::Service) {
-                throw InvalidClaimsError(
+                vr.addError(
                     "sharing information (for latency tracking) is only valid for services");
             }
             if (!i.token.empty()) {
@@ -325,13 +337,13 @@ namespace {
                 try {
                     act = decodeActivationClaims(i.token);
                 } catch (const Error&) {
-                    throw InvalidClaimsError("import \"" + i.subject +
-                                             "\" contains an invalid activation token");
+                    vr.addError("import \"" + i.subject + "\" contains an invalid activation token");
+                    continue;
                 }
                 const auto issuerAccount = act->issuerAccount();
                 if (act->issuer() != i.account &&
                     (!issuerAccount || *issuerAccount != i.account)) {
-                    throw InvalidClaimsError("activation token doesn't match account for import \"" +
+                    vr.addError("activation token doesn't match account for import \"" +
                                              i.subject + "\"");
                 }
             }
@@ -521,9 +533,6 @@ std::string AccountClaims::encodeWithSigner(const std::string& issuerPublicKey,
 
     // NATS-specific claims: start from the carried nats object, then
     // overwrite the fields this port manages.
-    validateAccountConfig(impl_->limits_, impl_->mappings_);
-    validateExportsImports(impl_->exports_, impl_->imports_);
-    validateExternalAuthorization(impl_->authorization_);
 
     json nats_claims = impl_->natsRaw_;
     nats_claims["limits"] = accountLimitsToJson(impl_->limits_);
@@ -597,7 +606,31 @@ std::string AccountClaims::encodeWithSigner(const std::string& issuerPublicKey,
     return signAndAssemble(payload.dump(), issuerPublicKey, sign);
 }
 
+void AccountClaims::validate(ValidationResults& vr) const {
+    internal::addTimeChecks(vr, impl_->expires_, impl_->notBefore_);
+    validateAccountConfig(impl_->limits_, impl_->mappings_, vr);
+    validateExportsImports(impl_->exports_, impl_->imports_, vr);
+    validateExternalAuthorization(impl_->authorization_, vr);
+    // Go: IsEmpty is the ZERO value, so this fires even for the -1 no-limit
+    // defaults (measured on Go's own self-signed golden)
+    const auto& l = impl_->limits_;
+    const bool limitsEmpty = l.subs == 0 && l.data == 0 && l.payload == 0 && l.imports == 0 &&
+                             l.exports == 0 && !l.wildcardExports && !l.disallowBearer &&
+                             l.conn == 0 && l.leafNodeConn == 0 &&
+                             l.jetStream == JetStreamLimits{} && l.tieredLimits.empty();
+    if (nkeys::IsValidPublicAccountKey(impl_->issuer_) && !limitsEmpty) {
+        vr.addWarning("self-signed account JWTs shouldn't contain operator limits");
+    }
+}
+
 void AccountClaims::validate() const {
+    checkStructure();
+    ValidationResults vr;
+    validate(vr);
+    internal::throwFirstBlocking(vr);
+}
+
+void AccountClaims::checkStructure() const {
     if (impl_->subject_.empty()) {
         throw InvalidClaimsError("Account subject cannot be empty");
     }
@@ -761,7 +794,7 @@ std::unique_ptr<AccountClaims> decodeAccountClaims(const std::string& jwt) {
     }
 
     // Validate the decoded claims
-    claims->validate();
+    claims->checkStructure();
 
     return claims;
 }

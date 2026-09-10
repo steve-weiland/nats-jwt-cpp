@@ -28,6 +28,10 @@
 #  10. aud / nbf / tags: C++-minted tokens of all four legacy types show the
 #      intended values in Go's typed parse (tags normalized Go-TagList-style);
 #      Go's goldens decode in C++
+#  11. validation report: tokens Go can MINT but its own Validate flags
+#      (Go's Encode does not validate) decode in C++ WITHOUT throwing, and the
+#      C++ report equals Go's issue list line-for-line (blocking/time flags +
+#      description)
 set -eu
 
 BUILD_DIR=${1:?usage: run.sh <cmake-build-dir>}
@@ -156,6 +160,21 @@ for t in operator account user activation; do
     "$CPP" decode "$t" "$TMP/fields-go/fields-$t.jwt" >/dev/null || fail "C++ rejected Go-minted fields-$t.jwt"
 done
 check "aud/nbf/tags: C++ values land in Go's typed parse; Go's goldens decode in C++"
+
+# 11 ── validation report parity on Go-mintable-but-flawed tokens
+mkdir -p "$TMP/flawed"
+"$GO" genflawed "$TMP/flawed" >/dev/null
+for f in expired notyet selfsigned to mapping user; do
+    want=$("$GO" validate "$TMP/flawed/flawed-$f.jwt" | grep "^ISSUE:") || true
+    got=$("$CPP" validate "$TMP/flawed/flawed-$f.jwt" | grep "^ISSUE:") || fail "C++ could not decode Go's flawed-$f.jwt (advisory failures must stay inspectable)"
+    [ -n "$want" ] || fail "Go reported no issues for flawed-$f.jwt — the golden lost its flaw"
+    [ "$got" = "$want" ] || fail "report mismatch on flawed-$f.jwt
+--- Go:
+$want
+--- C++:
+$got"
+done
+check "validation report: C++ decodes Go's flawed tokens and reports Go's issues verbatim"
 
 echo
 echo "INTEROP PASS ($pass checks)"

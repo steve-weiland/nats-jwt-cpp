@@ -131,6 +131,18 @@ std::int64_t getCurrentTimestamp() {
     return duration_cast<seconds>(system_clock::now().time_since_epoch()).count();
 }
 
+void addTimeChecks(ValidationResults& vr, std::int64_t exp, std::int64_t nbf) {
+    const std::int64_t now = getCurrentTimestamp();
+    if (exp > 0 && now > exp) vr.addTimeCheck("claim is expired");
+    if (nbf > 0 && nbf > now) vr.addTimeCheck("claim is not yet valid");
+}
+
+void throwFirstBlocking(const ValidationResults& vr) {
+    for (const auto& i : vr.issues()) {
+        if (i.blocking) throw InvalidClaimsError(i.description);
+    }
+}
+
 SignFn signerFor(const nkeys::KeyPair& kp) {
     return [&kp](std::string_view, std::span<const std::uint8_t> data) { return kp.sign(data); };
 }

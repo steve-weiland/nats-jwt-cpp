@@ -49,6 +49,16 @@ the Go implementation is the defining requirement and is continuously measured
   re-encode so un-ported fields (real limits, mappings, imports…) survive the
   re-sign flow — resetting them to defaults would be silent privilege
   escalation.
+- **Validation has one source of truth.** Each claim type's
+  `validate(ValidationResults&)` holds Go's rules (blocking errors, the two
+  warnings, exp/nbf time checks) and accumulates every finding; the
+  throwing `validate()` runs the structural check and then throws the first
+  BLOCKING issue. Encode calls the throwing form (we enforce what Go only
+  advises — documented divergence), decode calls ONLY `checkStructure()`:
+  Go's Encode does not validate, so Go mints tokens its own Validate flags,
+  and those must stay decodable (the #6 lesson; interop check 11 compares
+  our report to Go's line for line). Never add a throw inside a rule
+  validator; add an issue.
 - **Docs state measured truth only** (history: "License TBD", a README example
   demonstrating a redundant setIssuer dance, tests that asserted the
   creds-breaking bug).

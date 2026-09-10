@@ -33,7 +33,12 @@ creds generation AND parsing (`parseDecoratedJWT`/`parseDecoratedNKey`/
 `parseDecoratedUserNKey`, plus `decorateJWT`/`decorateSeed`, byte-identical to
 Go). Un-ported fields survive decode→re-encode untouched. NOT ported (by
 choice): v1 token reading, generic claims, activation hashID,
-xkey-encrypted callout traffic. `aud`, `nbf` and `tags` ARE ported on every
+xkey-encrypted callout traffic. Validation reports ARE ported: every claim
+type has Go's accumulating `validate(ValidationResults&)` (blocking errors,
+warnings, exp/nbf time checks, Go's texts verbatim) — the throwing
+`validate()` sits on top of it and encode enforces blocking issues, while
+decode keeps Go-mintable-but-flawed tokens inspectable (a CI gate compares
+the C++ report to Go's line for line). `aud`, `nbf` and `tags` ARE ported on every
 claim type (`addTags` gives Go's TagList normalization; a future-`nbf` user
 being refused by a real nats-server is a CI gate). Auth callout IS ported:
 account `authorization` config (`ExternalAuthorization`), plus
@@ -108,6 +113,14 @@ std::cout << decoded->name().value_or("") << "\n";
 // Validate complete chain
 std::vector<std::string> chain = {op_jwt, acc_jwt, user_jwt};
 auto result = jwt::validateChain(chain, jwt::ValidationOptions::strict());
+
+// nsc-style report: every finding, Go's model — expiry is a time check, not
+// an error, so a tool can inspect an expired token without failing
+jwt::ValidationResults report;
+decoded->validate(report);
+for (const auto& issue : report.issues())
+    std::cerr << (issue.blocking ? "error: " : "warning: ") << issue.description << "\n";
+if (report.isBlocking(/*includeTimeChecks=*/true)) { /* refuse */ }
 
 // Generate NATS credentials file
 std::string creds = jwt::formatUserConfig(user_jwt, user_kp->seedString());
